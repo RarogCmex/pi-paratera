@@ -1,0 +1,61 @@
+{
+  "name": "pi-paratera",
+  "version": "0.1.0",
+  "description": "Pi provider extension for the PARATERA MaaS gateway (llmapi.paratera.com): Responses API first, chat-completions fallback, dynamic model refresh.",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/RarogCmex/pi-paratera.git"
+  },
+  "bugs": {
+    "url": "https://github.com/RarogCmex/pi-paratera/issues"
+  },
+  "homepage": "https://github.com/RarogCmex/pi-paratera#readme",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "pi-provider",
+    "paratera",
+    "llmapi",
+    "maas",
+    "litellm",
+    "responses-api",
+    "deepseek",
+    "glm",
+    "qwen",
+    "kimi",
+    "minimax",
+    "ernie"
+  ],
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "files": [
+    "index.ts",
+    "settings.ts",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "tsx --test test/provider.test.ts test/settings.test.ts",
+    "check": "npm run typecheck && npm run test"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "0.85.1",
+    "@earendil-works/pi-coding-agent": "0.85.1",
+    "@types/node": "24.6.2",
+    "tsx": "4.20.6",
+    "typescript": "5.9.3"
+  }
+}
