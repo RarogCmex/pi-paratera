@@ -226,6 +226,15 @@ export function parateraCommands(): CommandSpec[] {
 			description: "Model catalog tools",
 			args: [{ name: "refresh", description: "Force GET /v1/models refresh and persist the overlay" }],
 		},
+		{
+			name: "transport",
+			description: "Transparent connect-retry for the flaky China-hosted endpoint",
+			args: [
+				{ name: "status", description: "Dispatcher install state + last retried connect error" },
+				{ name: "off", description: "Disable retries now (persist via PARATERA_TRANSPORT_RETRY=off)" },
+				{ name: "on", description: "Re-enable retries (removes the session kill-switch)" },
+			],
+		},
 	];
 }
 

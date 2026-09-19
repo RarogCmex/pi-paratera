@@ -6,6 +6,7 @@
 
 - `index.ts` — всё расширение: каталог моделей (65 записей), `createParateraGatewayProvider`, хуки `before_provider_request` / `message_end`, команда `/paratera`.
 - `settings.ts` — JSON-стор настроек (`<agentDir>/paratera.json`, где agentDir = `getAgentDir()` хоста: `$PI_CODING_AGENT_DIR` или `~/.pi/agent`).
+- `transport.ts` — прозрачный повтор ошибок соединения (`UND_ERR_CONNECT_TIMEOUT` и др.): `withConnectRetry` для control-plane fetch и origin-scoped undici-диспетчер для инференс-стримов. Модуль чистый: undici инжектирует входная точка (`resolvePiUndici`).
 - `test/` — офлайн-тесты (`node:test` через tsx).
 - `secret.env` — локальный ключ и URL. **В git не попадает** (`.gitignore`); никогда не коммить и не вставляй ключ в код/доки/тесты.
 
@@ -23,6 +24,8 @@ npm run check    # typecheck + офлайн-тесты — обязательн�
 - `max_tokens`, **не** `max_completion_tokens`: последний молча игнорируется частью апстримов (Qwen выдал 38 токенов при cap=1). Любое изменение `maxTokensField` — регрессия.
 - Роут Responses выбирается **помодельно**, а не для всего шлюза: GLM-4.x 404-ит на `/v4/responses`, ERNIE отдаёт 401. Новая модель — сначала проба, потом каталог.
 - Цены намеренно нулевые: шлюз не отдаёт per-model price (`/model/info` → `RBAC: access denied`). Не подставляй «оценочные» цифры — это выдуманные значения.
-- Сеть до китайского эндпоинта нестабильна (undici `UND_ERR_CONNECT_TIMEOUT` при живом curl). Таймауты нарочно щедрые; любой сетевой путь должен деградировать, а не кидать: провал `fetchModels` ⇒ статический baseline, недоступность ключа ⇒ `unavailable`, но не `invalid`.
+- Сеть до китайского эндпоинта нестабильна (undici `UND_ERR_CONNECT_TIMEOUT` при живом curl). pi-ai такие ошибки **не** ретраит (`retryProviderRequest` требует `status`+`headers`, а connect-ошибка — голый `TypeError: fetch failed` с `cause.code`), поэтому их закрывает `transport.ts`. Ретраить можно **только** connect/socket-коды до начала ответа — они означают, что сервер не получил запрос, значит повтор не задвоит исполнение и биллинг. HTTP 429/500 здесь не ретраятся намеренно (это зона pi-ai), и диспетчер перестаёт ретраить, как только ответ начался.
+- Транспорт обязан деградировать, а не кидать: провал `resolvePiUndici` или любая ошибка внутри обёртки ⇒ запрос проходит как есть (fail-open), `fetchModels` ⇒ статический baseline, недоступность ключа ⇒ `unavailable`, но не `invalid`. Тесты передают `installTransport:false`, чтобы не трогать глобальный диспетчер процесса.
+- Таймауты нарочно щедрые (25s key probe, 30s catalog, 25s endpoint probe).
 - Node ≥ 22, ESM, strict TS без эмита; сборки нет — pi исполняет `.ts` напрямую.
 - В `index.ts` нельзя писать `*/` внутри block-комментария (например `GLM-4V*/GLM-Z1*`): это закрывает шапку и ломает весь файл.

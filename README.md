@@ -30,12 +30,14 @@ export PARATERA_API_KEY=sk-…
 | `/paratera url` `status` / `set` / `check` / `reset` | Probe and persist a custom endpoint (private/mirror deployments) |
 | `/paratera keys check` | Validate the resolved key against the gateway, zero inference spent |
 | `/paratera models refresh` | Force `GET /v1/models` and persist the overlay |
+| `/paratera transport` `status` / `on` / `off` | Inspect or toggle the transparent connect-retry layer |
 
 `/paratera url set` probes a candidate with `GET /models` **before** saving and rebinds live
 models in place (pi keeps the same object references, so no `/reload` is needed).
 
-Environment overrides: `PARATERA_API_KEY`, `PARATERA_BASE_URL`. The env base URL wins over the
-persisted setting on every start; `PI_CACHE_RETENTION=long` forces 24h retention globally.
+Environment overrides: `PARATERA_API_KEY`, `PARATERA_BASE_URL`, `PARATERA_TRANSPORT_RETRY=off`.
+The env base URL wins over the persisted setting on every start;
+`PI_CACHE_RETENTION=long` forces 24h retention globally.
 
 ## Cost reporting
 
@@ -233,12 +235,42 @@ auto-compaction: `all candidate slots are busy` and `Deployment over defined TPM
 The `message_end` hook normalizes only genuine overflow (`Prompt exceeds max length`,
 `max_tokens参数非法`, `您已超过输入 tokens 配额`) onto pi's `context_length_exceeded` marker.
 
-**Network to this endpoint is flaky.** undici (pi-coding-agent's bundled fetch) intermittently
-fails with `UND_ERR_CONNECT_TIMEOUT` while curl to the same URL connects in ~0.2–1.2s, and some
-inference calls stall past 45s. Timeouts are therefore generous (25s key probe, 30s catalog,
-25s endpoint probe) and every network path degrades instead of throwing: a failed catalog fetch
-keeps the static baseline, an unreachable key probe reports `unavailable` (never `invalid`).
-Retrying is the correct response.
+**Network to this endpoint is flaky — handled transparently.** undici
+(pi-coding-agent's bundled fetch) intermittently fails with `UND_ERR_CONNECT_TIMEOUT` /
+`UND_ERR_SOCKET` while curl to the same URL connects in ~0.2–1.2s, and some inference calls
+stall past 45s.
+
+pi-ai does **not** retry these: its `retryProviderRequest` only retries errors that look like
+provider errors (it requires `status` + `headers`), but a connect failure is a bare
+`TypeError: fetch failed` with a `cause.code`, so it is rethrown and the whole turn fails. This
+extension closes that gap at two layers (`transport.ts`):
+
+- **Control plane** (key validation, endpoint probe, catalog refresh) — every fetch is wrapped in
+  `withConnectRetry`, so `/paratera keys check` and startup catalog refresh survive a dropped
+  connection.
+- **Inference streams** (which go through the OpenAI SDK → global fetch → undici and cannot be
+  wrapped any other way) — an origin-scoped undici dispatcher retries connect errors on requests
+  to the gateway origin only. All other traffic delegates to pi's previous dispatcher untouched.
+
+Retries are **safe by construction**: every retryable code (`CONNECT_ERROR_CODES`) is a
+connect/socket failure that fires *before* any request byte reaches the server, so a retry can
+never double-execute or double-bill. HTTP 429/500 are deliberately *not* retried here — the
+server already saw those requests, and pi-ai owns that policy. Likewise the dispatcher stops
+retrying the moment a response has started (mid-stream errors surface immediately).
+
+Policy: up to 2 retries, 400–5000 ms exponential backoff with jitter. When retries are
+exhausted, the final error is rewritten into an actionable message (URL + code + "usually
+transient") with `.code` and `.cause` preserved; undici wraps it, but Node prints the cause
+chain, so users see the explanation rather than a bare `fetch failed`.
+
+Everything fails open: if pi's undici cannot be resolved, or anything throws inside the wrapper,
+requests pass through unchanged and only `transport status` reports it. Timeouts are generous
+(25s key probe, 30s catalog, 25s endpoint probe), a failed catalog fetch keeps the static
+baseline, and an unreachable key probe reports `unavailable` (never `invalid`).
+
+`/paratera transport status` shows the install state and the last retried error;
+`transport off` disables retries for the session (persist across restarts with
+`PARATERA_TRANSPORT_RETRY=off`).
 
 **Key validation costs nothing.** `POST {}` to `/chat/completions` returns 500
 (`Router.acompletion() missing 1 required positional argument: 'messages'`) for a valid key and
@@ -277,6 +309,7 @@ README together, and never introduce an unverified limit or effort value — pro
 |---|---|
 | `index.ts` | The extension: verified catalog, `createParateraGatewayProvider`, hooks, `/paratera` command. Header comment holds all gateway facts. |
 | `settings.ts` | JSON store (`<agentDir>/paratera.json`), `/paratera` command catalog + autocomplete, pure payload helpers |
+| `transport.ts` | Transparent connect-retry: `withConnectRetry` for control-plane fetches, origin-scoped undici dispatcher for inference streams. Pure — undici is injected by the entrypoint |
 | `test/` | Offline tests (`provider.test.ts`, `settings.test.ts`) |
 
 Settings resolve to `$PI_CODING_AGENT_DIR` or `~/.pi/agent`. A missing, corrupt, or

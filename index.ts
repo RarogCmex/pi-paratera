@@ -165,11 +165,25 @@
  *
  * Network: the endpoint is hosted in China and drops connections transiently —
  * undici (pi-coding-agent's bundled fetch) intermittently fails with
- * UND_ERR_CONNECT_TIMEOUT while curl to the same URL connects in ~0.2–1.2s,
- * and some inference calls stall >45s. Timeouts here are therefore generous
- * (25s key probe, 30s catalog, 25s endpoint probe) and every network path
- * degrades rather than throwing: a failed catalog fetch keeps the static
- * baseline, an unreachable key probe reports "unavailable" (never "invalid").
+ * UND_ERR_CONNECT_TIMEOUT / UND_ERR_SOCKET while curl to the same URL connects
+ * in ~0.2–1.2s, and some inference calls stall >45s. pi-ai does NOT retry
+ * these (its retryProviderRequest requires status+headers, but a connect
+ * failure is a bare `TypeError: fetch failed` with a cause.code), so transport.ts
+ * closes the gap at two layers: `withConnectRetry` wraps the control-plane
+ * fetches below (validateGatewayKey / probeBaseUrl / fetchGatewayModels via
+ * `defaultFetch`), and an origin-scoped undici dispatcher (installed in the
+ * entrypoint through resolvePiUndici) retries connect errors on inference
+ * streams too. Only pre-response connect/socket codes are retried — they fire
+ * before any request byte is sent, so a retry can never double-execute or
+ * double-bill; HTTP 429/500 stay pi-ai's business. Everything fails open: an
+ * unresolvable undici or any throw inside the wrapper passes the request
+ * through untouched, and `/paratera transport status` reports it.
+ *
+ * Timeouts here are therefore generous (25s key probe, 30s catalog, 25s
+ * endpoint probe) and every network path degrades rather than throwing: a
+ * failed catalog fetch keeps the static baseline, an unreachable key probe
+ * reports "unavailable" (never "invalid"). Retrying is automatic; a persistent
+ * failure surfaces as an actionable message naming the URL and error code.
  *
  * Usage:
  *   pi                        # /login paratera, then /model
@@ -178,6 +192,7 @@
  *   /paratera cache on        # persist 24h prompt-cache retention
  *   /paratera keys check      # validate the resolved key (zero inference)
  *   /paratera models refresh  # force GET /v1/models catalog refresh
+ *   /paratera transport status# connect-retry install state + last retried error
  */
 
 import {
@@ -205,7 +220,27 @@ import {
 	type CacheRetentionMode,
 	type ParateraSettings,
 } from "./settings.ts";
+import {
+	DEFAULT_CONNECT_RETRY,
+	ensureTransportInstalled,
+	guardOrigin,
+	markDispatcher,
+	setTransportRetryEnabled,
+	type DispatchTarget,
+	type DispatcherDeps,
+	type SelectiveDispatcherHandle,
+	transportRetryDisabled,
+	unguardOrigin,
+	withConnectRetryFetch,
+} from "./transport.ts";
+import { createRequire } from "node:module";
+import { realpathSync } from "node:fs";
 
+/** Default fetch for the extension's own control-plane calls (key validation,
+ *  endpoint probe, catalog refresh): transparently retries the intermittent
+ *  connect timeouts this China-hosted endpoint produces. Callers that inject
+ *  their own fetchImpl (tests) bypass it and stay deterministic. */
+const defaultFetch = withConnectRetryFetch(fetch, DEFAULT_CONNECT_RETRY);
 
 export const PROVIDER_ID = "paratera";
 /** The real public endpoint — paratera publishes one shared MaaS URL (unlike
@@ -1311,7 +1346,7 @@ export function mergeGatewayCatalog(raw: GatewayModelEntry[], baseUrl: string): 
 export async function fetchGatewayModels(
 	context: RefreshModelsContext,
 	baseUrl: string,
-	fetchImpl: typeof fetch = fetch,
+	fetchImpl: typeof fetch = defaultFetch,
 ): Promise<Model<GatewayApi>[]> {
 	const fallback = buildModels(baseUrl);
 	const key = context.credential?.type === "api_key" ? context.credential.key : undefined;
@@ -1361,7 +1396,7 @@ export async function validateGatewayKey(
 	const timeout = setTimeout(() => controller.abort(), KEY_VALIDATION_TIMEOUT_MS);
 	const signal = options.signal ? AbortSignal.any([options.signal, controller.signal]) : controller.signal;
 	try {
-		const response = await (options.fetchImpl ?? fetch)(`${baseUrl}/chat/completions`, {
+		const response = await (options.fetchImpl ?? defaultFetch)(`${baseUrl}/chat/completions`, {
 			method: "POST",
 			headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
 			body: "{}",
@@ -1410,7 +1445,7 @@ export async function probeBaseUrl(
 	try {
 		const headers: Record<string, string> = {};
 		if (options.apiKey) headers.Authorization = `Bearer ${options.apiKey}`;
-		const response = await (options.fetchImpl ?? fetch)(`${url}/models`, { headers, signal });
+		const response = await (options.fetchImpl ?? defaultFetch)(`${url}/models`, { headers, signal });
 		if (response.status === 401 || response.status === 403) {
 			return options.apiKey ? { status: "auth" } : { status: "reachable" };
 		}
@@ -1468,7 +1503,7 @@ export async function promptCustomEndpoint(
 	apiKey: string | undefined,
 	options: CustomEndpointOptions,
 ): Promise<string | undefined> {
-	const fetchImpl = options.fetchImpl ?? fetch;
+	const fetchImpl = options.fetchImpl ?? defaultFetch;
 	urlLoop: while (true) {
 		const raw = (
 			await interaction.prompt({
@@ -1523,6 +1558,95 @@ async function resolveKey(ctx: AuthContext, credential?: ApiKeyCredential) {
 }
 
 // ---------------------------------------------------------------------------
+// transport hardening for inference streams (undici dispatcher)
+// ---------------------------------------------------------------------------
+
+interface PiUndici {
+	Dispatcher: new () => unknown;
+	getGlobalDispatcher(): unknown;
+	setGlobalDispatcher(dispatcher: unknown): void;
+}
+
+/**
+ * Resolve pi's OWN undici copy. This extension has its own node_modules, so
+ * importing "undici" here would get a different instance whose
+ * `setGlobalDispatcher` does not affect pi's fetch. We load it from pi's entry
+ * point instead — the same approach pi-nvidia-plus uses.
+ */
+export function resolvePiUndici(): { undici?: PiUndici; error?: string } {
+	const candidates: string[] = [];
+	if (process.argv[1]) {
+		candidates.push(process.argv[1]);
+		try {
+			candidates.push(realpathSync(process.argv[1]));
+		} catch {
+			// no real path — try argv[1] as-is
+		}
+	}
+	const main = (process as unknown as { mainModule?: { filename?: string } }).mainModule;
+	if (main?.filename) candidates.push(main.filename);
+	for (const base of candidates) {
+		try {
+			const undici = createRequire(base)("undici") as PiUndici | undefined;
+			if (undici?.Dispatcher && typeof undici.setGlobalDispatcher === "function") return { undici };
+		} catch {
+			// try the next base
+		}
+	}
+	return { error: `undici not resolvable from: ${candidates.join(", ") || "(no entrypoint)"}` };
+}
+
+/**
+ * Install (idempotently) the connect-retry dispatcher scoped to a gateway
+ * origin. Returns a status string for diagnostics; never throws. Safe to call
+ * on every request — `ensureTransportInstalled` no-ops once installed.
+ */
+function installTransportForOrigin(baseUrl: string): { installed: boolean; already?: boolean; error?: string } {
+	if (transportRetryDisabled()) return { installed: false };
+	try {
+		guardOrigin(baseUrl);
+		const { undici, error } = resolvePiUndici();
+		if (!undici) return { installed: false, error };
+		const DispatcherBase = undici.Dispatcher;
+		const deps: DispatcherDeps = {
+			getGlobalDispatcher: () => undici.getGlobalDispatcher(),
+			setGlobalDispatcher: (d) => undici.setGlobalDispatcher(d),
+			adapt: (duck: SelectiveDispatcherHandle) => {
+				class ParateraDispatcher extends (DispatcherBase as unknown as new () => DispatchTarget) {
+					dispatch(opts: unknown, handler: unknown): boolean {
+						return duck.dispatch(opts, handler);
+					}
+					close(): Promise<void> {
+						return duck.close();
+					}
+					destroy(): Promise<void> {
+						return duck.destroy();
+					}
+				}
+				const instance = new ParateraDispatcher();
+				markDispatcher(instance);
+				return instance;
+			},
+		};
+		const result = ensureTransportInstalled(deps, {
+			config: DEFAULT_CONNECT_RETRY,
+			onRetry: ({ attempt, code, delayMs }) => {
+				lastTransportRetry = { attempt, code, delayMs, at: Date.now() };
+			},
+		});
+		return { installed: result.installed, already: result.already };
+	} catch (err) {
+		return { installed: false, error: err instanceof Error ? err.message : String(err) };
+	}
+}
+
+/** Last transparent connect-retry, surfaced by `/paratera transport status`. */
+let lastTransportRetry: { attempt: number; code: string; delayMs: number; at: number } | undefined;
+export function getLastTransportRetry(): typeof lastTransportRetry {
+	return lastTransportRetry;
+}
+
+// ---------------------------------------------------------------------------
 // provider factory
 // ---------------------------------------------------------------------------
 
@@ -1538,7 +1662,7 @@ export interface ParateraGatewayOptions {
 }
 
 export function createParateraGatewayProvider(options: ParateraGatewayOptions = {}) {
-	const fetchImpl = options.fetchImpl ?? fetch;
+	const fetchImpl = options.fetchImpl ?? defaultFetch;
 	const settingsFile = options.settingsFile;
 	let savedSettings: ParateraSettings | undefined = settingsFile ? loadSettings(settingsFile) : undefined;
 	/** Endpoint chosen during this process (login switch / url command) —
@@ -1738,11 +1862,15 @@ export interface ParateraExtensionOptions {
 	settingsFile?: string;
 	/** fetch override (tests) used by the key-check command. */
 	fetchImpl?: typeof fetch;
+	/** Install the undici connect-retry dispatcher for inference streams.
+	 *  Defaults to true in pi; tests pass false so the global dispatcher of the
+	 *  test process is never mutated. */
+	installTransport?: boolean;
 }
 
 export default function paratera(pi: ExtensionAPI, options: ParateraExtensionOptions = {}): void {
 	const settingsFile = options.settingsFile ?? settingsPath();
-	const fetchImpl = options.fetchImpl ?? fetch;
+	const fetchImpl = options.fetchImpl ?? defaultFetch;
 	let settings: ParateraSettings = loadSettings(settingsFile);
 
 	function effectiveCacheRetention(): { mode: CacheRetentionMode; source: "env" | "settings" } {
@@ -1767,13 +1895,36 @@ export default function paratera(pi: ExtensionAPI, options: ParateraExtensionOpt
 		ctx.ui.setStatus(STATUS_KEY, `para:cache-${mode}`);
 	}
 
+	// Declared before the provider factory so the onEndpointSaved closure below
+	// never reads them in the temporal dead zone.
+	const transportEnabled = options.installTransport !== false;
+	let transportStatus: { installed: boolean; already?: boolean; error?: string } = { installed: false };
+
 	const provider = createParateraGatewayProvider({
 		fetchImpl,
 		settingsFile,
 		onEndpointSaved: (s) => {
 			settings = s; // keep the entrypoint copy (status/widget/endpoint) in sync
+			// A new endpoint means a new origin: guard it so inference streams to
+			// it also get transparent connect retries (the old origin stays
+			// guarded, which is harmless — it is simply no longer dialed).
+			if (transportEnabled) {
+				const next = endpoint().url;
+				guardOrigin(next);
+				transportStatus = installTransportForOrigin(next);
+			}
 		},
 	});
+	// Install the undici connect-retry dispatcher scoped to the effective
+	// endpoint before the first request. Fail-open: any error is recorded for
+	// `/paratera transport status` and never blocks provider registration.
+	// Governed by options.installTransport so tests never mutate the process-
+	// global dispatcher.
+	if (transportEnabled) {
+		const ep = endpoint().url;
+		guardOrigin(ep);
+		transportStatus = installTransportForOrigin(ep);
+	}
 	pi.registerProvider(provider);
 
 	pi.on("before_provider_request", (event, ctx) => {
@@ -2021,16 +2172,68 @@ export default function paratera(pi: ExtensionAPI, options: ParateraExtensionOpt
 		}
 	}
 
+	const cmdTransport = async (args: string, ctx: ParateraCtx): Promise<void> => {
+		const sub = args.trim().toLowerCase();
+		if (sub === "off") {
+			setTransportRetryEnabled(false);
+			ctx.ui.notify(
+				"Connect retries disabled for this session. To keep them off across restarts, set PARATERA_TRANSPORT_RETRY=off.",
+				"info",
+			);
+			return;
+		}
+		if (sub === "on") {
+			setTransportRetryEnabled(true);
+			if (!transportEnabled) {
+				ctx.ui.notify("Connect retries re-enabled (dispatcher install is disabled in this host).", "info");
+				return;
+			}
+			const res = installTransportForOrigin(endpoint().url);
+			transportStatus = res;
+			ctx.ui.notify(
+				res.error
+					? `Connect retries re-enabled, but the dispatcher could not be installed (${res.error}). Control-plane fetches still retry.`
+					: `Connect retries re-enabled${res.installed ? " and dispatcher installed" : res.already ? " (dispatcher already installed)" : ""}.`,
+				res.error ? "warning" : "info",
+			);
+			return;
+		}
+		if (sub && sub !== "status") {
+			ctx.ui.notify(
+				`Unknown transport subcommand "${sub}" — use: transport [status|on|off]`,
+				"warning",
+			);
+			return;
+		}
+		const disabled = transportRetryDisabled();
+		const last = getLastTransportRetry();
+		ctx.ui.notify(
+			[
+				"transport: transparent connect-retry for the flaky China-hosted endpoint",
+				`retries: ${disabled ? "DISABLED" : "enabled"}${disabled ? (transportRetryDisabled() && !process.env.PARATERA_TRANSPORT_RETRY ? " (session override)" : " (PARATERA_TRANSPORT_RETRY)") : ""}`,
+				`dispatcher: ${transportStatus.installed ? "installed" : transportStatus.already ? "already installed" : `not installed${transportStatus.error ? ` — ${transportStatus.error}` : ""}`}`,
+				`control-plane fetch: ${disabled ? "no retry" : "retries connect errors"} (validateKey / probe / models refresh)`,
+				`inference streams: ${disabled || (!transportStatus.installed && !transportStatus.already) ? "no retry (dispatcher not active)" : "retries connect errors"}`,
+				last
+					? `last retry: attempt ${last.attempt} on ${last.code}, waited ${Math.round(last.delayMs)}ms (${new Date(last.at).toISOString()})`
+					: "last retry: none this session",
+				`backoff: up to ${DEFAULT_CONNECT_RETRY.maxRetries} retries, ${DEFAULT_CONNECT_RETRY.minDelayMs}–${DEFAULT_CONNECT_RETRY.maxDelayMs}ms`,
+			].join("\n"),
+			"info",
+		);
+	};
+
 	const runners: Record<string, (args: string, ctx: ParateraCtx) => Promise<void>> = {
 		status: cmdStatus,
 		cache: cmdCache,
 		url: cmdUrl,
 		keys: cmdKeys,
 		models: cmdModels,
+		transport: cmdTransport,
 	};
 
 	pi.registerCommand("paratera", {
-		description: "PARATERA MaaS settings: status, cache retention, endpoint URL, key check, catalog refresh",
+		description: "PARATERA MaaS settings: status, cache retention, endpoint URL, key check, catalog refresh, transport retry",
 		getArgumentCompletions: (prefix: string) => completeArgs(prefix, parateraCommands()),
 		handler: async (args: string, ctx: ParateraCtx) => {
 			const trimmed = (args ?? "").trim();

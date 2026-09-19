@@ -260,7 +260,7 @@ test("keeps an existing prompt_cache_key", () => {
 
 test("the command catalog covers every runner", () => {
 	const names = parateraCommands().map((c) => c.name);
-	assert.deepEqual(names, ["status", "cache", "url", "keys", "models"]);
+	assert.deepEqual(names, ["status", "cache", "url", "keys", "models", "transport"]);
 	for (const c of parateraCommands()) {
 		assert.ok(c.description.length > 0, `${c.name} described`);
 	}

@@ -82,7 +82,10 @@ function isolatedSettingsFile(): string {
 
 function loadExtension(): FakePi {
 	const fake = createFakePi();
-	(extension as any)(fake.pi, { settingsFile: isolatedSettingsFile() });
+	// installTransport:false — tests must never mutate the process-global undici
+	// dispatcher. The transport module is unit-tested directly in
+	// test/transport.test.ts.
+	(extension as any)(fake.pi, { settingsFile: isolatedSettingsFile(), installTransport: false });
 	return fake;
 }
 
@@ -615,7 +618,7 @@ test("/paratera cache on|off|status round-trips and persists", async () => {
 	const fake = loadExtension();
 	const file = isolatedSettingsFile();
 	const f2 = createFakePi();
-	(extension as any)(f2.pi, { settingsFile: file });
+	(extension as any)(f2.pi, { settingsFile: file, installTransport: false });
 	const cmd = f2.commands.get("paratera") as Cmd;
 
 	const on = fakeCtx();
@@ -701,6 +704,40 @@ test("/paratera url set without the TUI explains the CLI form", async () => {
 	f.ctx.hasUI = false;
 	await command(fake).handler("url set", f.ctx);
 	assert.match(f.notices[0].message, /interactive prompt needs the TUI/);
+});
+
+test("/paratera transport status reports the disabled state under tests", async () => {
+	const fake = loadExtension(); // installTransport:false in the harness
+	const f = fakeCtx();
+	await command(fake).handler("transport status", f.ctx);
+	const text = f.notices[0].message;
+	assert.match(text, /transparent connect-retry/);
+	assert.match(text, /dispatcher: not installed/);
+	assert.match(text, /last retry: none this session/);
+	assert.match(text, /up to 2 retries/);
+});
+
+test("/paratera transport off|on toggles without touching the global dispatcher", async () => {
+	const fake = loadExtension();
+	const off = fakeCtx();
+	await command(fake).handler("transport off", off.ctx);
+	assert.match(off.notices[0].message, /Connect retries disabled/);
+
+	const on = fakeCtx();
+	await command(fake).handler("transport on", on.ctx);
+	assert.match(on.notices[0].message, /re-enabled/);
+
+	const bad = fakeCtx();
+	await command(fake).handler("transport banana", bad.ctx);
+	assert.match(bad.notices[0].message, /Unknown transport subcommand/);
+	assert.equal(bad.notices[0].type, "warning");
+});
+
+test("/paratera argument completions cover the transport subcommands", async () => {
+	const fake = loadExtension();
+	const cmd = fake.commands.get("paratera") as Cmd;
+	const items = cmd.getArgumentCompletions("transport ") as { value: string }[];
+	assert.deepEqual(items.map((i) => i.value), ["transport status", "transport off", "transport on"]);
 });
 
 test("the status widget clears for other providers and shows cache mode for ours", async () => {
@@ -798,10 +835,10 @@ test("message_end falls back to ctx.model when the message omits its provider", 
 test("before_provider_request injects retention only when enabled", async () => {
 	const file = isolatedSettingsFile();
 	const fake = createFakePi();
-	(extension as any)(fake.pi, { settingsFile: file });
+	(extension as any)(fake.pi, { settingsFile: file, installTransport: false });
 	saveSettings({ cacheRetention: "long" }, file);
 	const fake2 = createFakePi();
-	(extension as any)(fake2.pi, { settingsFile: file });
+	(extension as any)(fake2.pi, { settingsFile: file, installTransport: false });
 	const hook = fake2.handlers.get("before_provider_request")![0];
 
 	const chatPayload = { model: "GLM-4.6", messages: [{ role: "user", content: "hi" }] };
