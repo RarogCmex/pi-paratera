@@ -142,7 +142,8 @@
  * Catalog: dynamic. GET /v1/models lists 96 ids but omits every capability,
  * so the listing is merged over the verified static table below: known ids
  * keep their measured caps/maps/compat, unknown ids are auto-registered
- * conservatively on the chat route. 31 listed ids are deliberately NOT
+ * conservatively on the chat route (and upgraded with any cap saved by
+ * `/paratera models probe` — a persisted maxTokens map in paratera.json). 31 listed ids are deliberately NOT
  * registered because they are not chat-completion models (embeddings, rerank,
  * ASR, OCR, image/video generation), are dead deployments, or reject tools:
  *   - non-chat: GLM-Embedding-2/3, GLM-Rerank, GLM-ASR-2512,
@@ -1339,11 +1340,16 @@ export function unknownModelConfig(id: string, baseUrl: string, name?: string): 
 /**
  * Merge the live GET /v1/models listing over the static catalog:
  * - known ids keep their verified caps/maps/compat, gain a fresh name
- * - unknown ids are auto-registered conservatively (family-guessed route)
+ * - unknown ids are auto-registered conservatively (family-guessed route),
+ *   then upgraded with measured output caps when one was probed and saved
  * - skipped ids (non-chat, dead, tool-less) never register
  * - an empty/invalid listing falls back to the static catalog
  */
-export function mergeGatewayCatalog(raw: GatewayModelEntry[], baseUrl: string): Model<GatewayApi>[] {
+export function mergeGatewayCatalog(
+	raw: GatewayModelEntry[],
+	baseUrl: string,
+	measuredMaxTokens: Record<string, number> = {},
+): Model<GatewayApi>[] {
 	const known = new Map(CATALOG.map((entry) => [entry.id, entry]));
 	const merged: Model<GatewayApi>[] = [];
 	const seen = new Set<string>();
@@ -1356,7 +1362,9 @@ export function mergeGatewayCatalog(raw: GatewayModelEntry[], baseUrl: string): 
 		if (base) {
 			merged.push({ ...base, name: name ?? base.name, provider: PROVIDER_ID, baseUrl });
 		} else {
-			merged.push(unknownModelConfig(id, baseUrl, name));
+			const config = unknownModelConfig(id, baseUrl, name);
+			const measured = measuredMaxTokens[id];
+			merged.push(measured !== undefined ? { ...config, maxTokens: measured } : config);
 		}
 	}
 	if (merged.length === 0) return buildModels(baseUrl);
@@ -1372,6 +1380,7 @@ export async function fetchGatewayModels(
 	context: RefreshModelsContext,
 	baseUrl: string,
 	fetchImpl: typeof fetch = defaultFetch,
+	measuredMaxTokens: Record<string, number> = {},
 ): Promise<Model<GatewayApi>[]> {
 	const fallback = buildModels(baseUrl);
 	const key = context.credential?.type === "api_key" ? context.credential.key : undefined;
@@ -1384,7 +1393,7 @@ export async function fetchGatewayModels(
 		if (!response.ok) return fallback;
 		const data = (await response.json()) as { data?: GatewayModelEntry[] };
 		if (!Array.isArray(data?.data) || data.data.length === 0) return fallback;
-		return mergeGatewayCatalog(data.data, baseUrl);
+		return mergeGatewayCatalog(data.data, baseUrl, measuredMaxTokens);
 	} catch {
 		return fallback;
 	}
@@ -1431,6 +1440,97 @@ export async function validateGatewayKey(
 		return { status: "unavailable", reason: `HTTP ${response.status}` };
 	} catch (error) {
 		return { status: "unavailable", reason: errorMessage(error) };
+	} finally {
+		done();
+	}
+}
+
+// ---------------------------------------------------------------------------
+// per-model limit probe (free: rejected before inference starts)
+// ---------------------------------------------------------------------------
+
+const MODEL_PROBE_TIMEOUT_MS = 25_000;
+
+/** A one-message, one-token chat completion with `max_tokens: 99_999_999`.
+ *  A capped upstream rejects it in a pre-inference 400 whose message names
+ *  the real cap, without generating any tokens; an uncapped upstream accepts
+ *  the value (and emits at most 1 token, keeping the cost at most ~1 token). */
+const MODEL_PROBE_BODY = JSON.stringify({
+	model: "MODEL_ID", // replaced by probeModelLimits
+	messages: [{ role: "user", content: "hi" }],
+	max_tokens: 99_999_999,
+	stream: false,
+});
+
+export type ModelLimitsProbe =
+	| { status: "capped"; maxTokens?: number; message: string }
+	| { status: "uncapped" }
+	| { status: "invalid-key" }
+	| { status: "unknown-model" }
+	| { status: "error"; reason: string };
+
+/** Parse a cap out of a gateway rejection message. Verified formats
+ *  (2026-09-19): GLM `限制数值范围[1,131072]`, Qwen `Range of max_tokens should
+ *  be [1, 131072]`, MiniMax `does not support max tokens > 196608`, ERNIE
+ *  `max_completion_tokens [1, 12288]`, Baichuan `must be between 1 and 32000`.
+ *  Returns undefined when the message names no cap. */
+export function parseMaxTokensCap(message: string): number | undefined {
+	const patterns = [/[\[（(]\s*1\s*,\s*(\d{4,})\s*[\]）)]/, /(?:>|超过|between\s+1\s+and)\s*(\d{4,})/i];
+	for (const re of patterns) {
+		const m = message.match(re);
+		if (m) {
+			const value = Number(m[1]);
+			if (Number.isSafeInteger(value) && value >= 1024) return value;
+		}
+	}
+	return undefined;
+}
+
+/**
+ * Zero- (or at most one-) token probe of a model's output cap: send
+ * `max_tokens: 99_999_999` with a single "hi" message and classify the reply:
+ * - 400 with a cap in the message ⇒ the enforced limit (free: rejected
+ *   before inference)
+ * - 200 ⇒ the upstream enforces no cap (at most 1 output token is billed)
+ * - 401/403 ⇒ the key was rejected, not the probe
+ * - 404/400 "does not exist" ⇒ the model is unknown to the gateway
+ * Never throws; never logs the key.
+ */
+export async function probeModelLimits(
+	id: string,
+	options: { apiKey: string; baseUrl?: string; fetchImpl?: typeof fetch; signal?: AbortSignal; timeoutMs?: number },
+): Promise<ModelLimitsProbe> {
+	const baseUrl = options.baseUrl ?? resolveBaseUrl();
+	const body = MODEL_PROBE_BODY.replace("MODEL_ID", JSON.stringify(id).slice(1, -1));
+	const { signal, done } = connectSignals(options.timeoutMs ?? MODEL_PROBE_TIMEOUT_MS, options.signal);
+	try {
+		const response = await (options.fetchImpl ?? defaultFetch)(`${baseUrl}/chat/completions`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json", Authorization: `Bearer ${options.apiKey}` },
+			body,
+			signal,
+		});
+		if (response.status === 401 || response.status === 403) return { status: "invalid-key" };
+		if (response.status === 404) return { status: "unknown-model" };
+		if (response.ok) return { status: "uncapped" };
+		// The gateway returns JSON error bodies, but tolerate plain text too.
+		const text = await response
+			.json()
+			.then((data) => JSON.stringify(data))
+			.catch(async () => {
+				try {
+					return await response.text();
+				} catch {
+					return "";
+				}
+			});
+		if (/model.*(not exist|does not exist|未找到|不存在)/i.test(text)) return { status: "unknown-model" };
+		const cap = parseMaxTokensCap(text);
+		return cap !== undefined
+			? { status: "capped", maxTokens: cap, message: text.slice(0, 400) }
+			: { status: "capped", message: text.slice(0, 400) };
+	} catch (error) {
+		return { status: "error", reason: errorMessage(error) };
 	} finally {
 		done();
 	}
@@ -1678,8 +1778,9 @@ export interface ParateraGatewayOptions {
 	fetchImpl?: typeof fetch;
 	/** Settings file so the login flow can persist an endpoint switch. */
 	settingsFile?: string;
-	/** Called after login persists a new endpoint (entrypoint syncs its copy). */
-	onEndpointSaved?: (settings: ParateraSettings) => void;
+	/** Called after the provider persists settings (endpoint switch, probed
+	 *  caps) — the entrypoint syncs its own settings copy. */
+	onSettingsSaved?: (settings: ParateraSettings) => void;
 }
 
 export function createParateraGatewayProvider(options: ParateraGatewayOptions = {}) {
@@ -1795,7 +1896,8 @@ export function createParateraGatewayProvider(options: ParateraGatewayOptions = 
 			},
 		},
 		models: buildModels(currentBaseUrl()),
-		fetchModels: (context) => fetchGatewayModels(context, currentBaseUrl(), fetchImpl),
+		fetchModels: (context) =>
+			fetchGatewayModels(context, currentBaseUrl(), fetchImpl, savedSettings?.maxTokens ?? {}),
 		api: {
 			"openai-responses": openAIResponsesApi(),
 			"openai-completions": openAICompletionsApi(),
@@ -1818,11 +1920,23 @@ export function createParateraGatewayProvider(options: ParateraGatewayOptions = 
 		rebindBaseUrl(url);
 		if (settingsFile) {
 			savedSettings = saveSettings({ baseUrl: url }, settingsFile);
-			options.onEndpointSaved?.(savedSettings);
+			options.onSettingsSaved?.(savedSettings);
 		}
 	}
 
-	return Object.assign(provider, { rebindBaseUrl, persistEndpoint });
+	/** Persist a measured output cap so future catalog merges apply it over
+	 *  the family default, and upgrade the live model entry right away. */
+	function persistMeasuredCap(id: string, maxTokens: number): void {
+		if (settingsFile) {
+			savedSettings = saveSettings({ maxTokens: { [id]: maxTokens } }, settingsFile);
+			options.onSettingsSaved?.(savedSettings);
+		}
+		for (const model of provider.getModels()) {
+			if (model.id === id) (model as { maxTokens: number }).maxTokens = maxTokens;
+		}
+	}
+
+	return Object.assign(provider, { rebindBaseUrl, persistEndpoint, persistMeasuredCap });
 }
 
 // ---------------------------------------------------------------------------
@@ -1921,7 +2035,13 @@ export default function paratera(pi: ExtensionAPI, options: ParateraExtensionOpt
 			return;
 		}
 		const { mode } = effectiveCacheRetention();
-		ctx.ui.setStatus(STATUS_KEY, `para:cache-${mode}`);
+		// Append the last transparent connect-retry when one happened recently
+		// (within 10 minutes) — the status line is the only glanceable surface
+		// for transport activity short of /paratera transport status.
+		const last = getLastTransportRetry();
+		const recent = last && Date.now() - last.at < 10 * 60_000;
+		const retryNote = recent ? ` ·retry:${last.code}` : "";
+		ctx.ui.setStatus(STATUS_KEY, `para:cache-${mode}${retryNote}`);
 	}
 
 	// Declared before the provider factory so the onEndpointSaved closure below
@@ -1932,7 +2052,7 @@ export default function paratera(pi: ExtensionAPI, options: ParateraExtensionOpt
 	const provider = createParateraGatewayProvider({
 		fetchImpl,
 		settingsFile,
-		onEndpointSaved: (s) => {
+		onSettingsSaved: (s) => {
 			settings = s; // keep the entrypoint copy (status/widget/endpoint) in sync
 			// A new endpoint means a new origin: guard it so inference streams to
 			// it also get transparent connect retries (the old origin stays
@@ -2063,12 +2183,51 @@ export default function paratera(pi: ExtensionAPI, options: ParateraExtensionOpt
 	};
 
 	const cmdModels = async (args: string, ctx: ParateraCtx): Promise<void> => {
-		const sub = args.trim().toLowerCase();
+		const parts = args.trim().split(/\s+/).filter(Boolean);
+		const sub = (parts[0] ?? "").toLowerCase();
+		if (sub === "probe") {
+			const id = parts.slice(1).join(" ");
+			if (!id) {
+				ctx.ui.notify("Usage: models probe <id> — free output-cap probe of one model", "warning");
+				return;
+			}
+			const key = await ctx.modelRegistry.getApiKeyForProvider(PROVIDER_ID);
+			if (!key) {
+				ctx.ui.notify(`No API key resolved — run /login paratera or set $${API_KEY_ENV}`, "warning");
+				return;
+			}
+			ctx.ui.notify(`Probing ${id} (max_tokens:99999999, rejected pre-inference — no tokens spent)…`, "info");
+			const probe = await probeModelLimits(id, { apiKey: key, baseUrl: endpoint().url, fetchImpl, signal: ctx.signal });
+			if (probe.status === "capped" && probe.maxTokens !== undefined) {
+				provider.persistMeasuredCap(id, probe.maxTokens);
+				ctx.ui.notify(
+					`${id}: enforced max output is ${probe.maxTokens.toLocaleString("en-US")} tokens (gateway: "${probe.message.trim()}") — saved; future catalog merges apply it over the family default.`,
+					"info",
+				);
+			} else if (probe.status === "capped") {
+				ctx.ui.notify(
+					`${id}: rejected with a cap the parser could not read — see the raw message: "${probe.message.trim()}"`,
+					"warning",
+				);
+			} else if (probe.status === "uncapped") {
+				ctx.ui.notify(
+					`${id}: accepted max_tokens:99999999 — no upstream cap (at most 1 token was generated).`,
+					"info",
+				);
+			} else if (probe.status === "invalid-key") {
+				ctx.ui.notify(`${id}: the gateway rejected the key (401/403) — re-run /login paratera.`, "error");
+			} else if (probe.status === "unknown-model") {
+				ctx.ui.notify(`${id}: the gateway does not know this model (404 / does not exist).`, "warning");
+			} else {
+				ctx.ui.notify(`${id}: probe failed (${probe.reason}) — endpoint unreachable?`, "warning");
+			}
+			return;
+		}
 		if (sub !== "refresh") {
 			ctx.ui.notify(
 				sub
-					? `Unknown models subcommand "${sub}" — use: models refresh`
-					: "Usage: models refresh — re-pull GET /v1/models and persist the overlay",
+					? `Unknown models subcommand "${sub}" — use: models refresh | models probe <id>`
+					: "Usage: models refresh | models probe <id>",
 				"warning",
 			);
 			return;

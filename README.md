@@ -30,6 +30,7 @@ export PARATERA_API_KEY=sk-…
 | `/paratera url` `status` / `set` / `check` / `reset` | Probe and persist a custom endpoint (private/mirror deployments) |
 | `/paratera keys check` | Validate the resolved key against the gateway, zero inference spent |
 | `/paratera models refresh` | Force `GET /v1/models` and persist the overlay |
+| `/paratera models probe <id>` | Free output-cap probe of one model (`max_tokens:99999999` is rejected pre-inference; capped upstreams name their cap, uncapped ones cost at most 1 token). A parsed cap is saved and applied over the family default in future catalog merges |
 | `/paratera transport` `status` / `on` / `off` | Inspect or toggle the transparent connect-retry layer |
 
 `/paratera url set` probes a candidate with `GET /models` **before** saving and rebinds live
@@ -38,6 +39,9 @@ models in place (pi keeps the same object references, so no `/reload` is needed)
 Environment overrides: `PARATERA_API_KEY`, `PARATERA_BASE_URL`, `PARATERA_TRANSPORT_RETRY=off`.
 The env base URL wins over the persisted setting on every start;
 `PI_CACHE_RETENTION=long` forces 24h retention globally.
+Settings (`<agentDir>/paratera.json`) also carry measured output caps from
+`models probe` (a `maxTokens` map keyed by model id); a re-probe updates them,
+and the store drops junk values (<1024) on load.
 
 ## Cost reporting
 

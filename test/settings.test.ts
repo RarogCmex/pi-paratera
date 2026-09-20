@@ -34,6 +34,36 @@ function tmpFile(): string {
 }
 
 // ---------------------------------------------------------------------------
+// measured maxTokens map (models probe persistence)
+// ---------------------------------------------------------------------------
+
+test("saveSettings merges maxTokens entries and loadSettings restores them", () => {
+	const file = tmpFile();
+	const first = saveSettings({ maxTokens: { "Brand-New-LLM": 32_768 } }, file);
+	assert.equal(first.maxTokens?.["Brand-New-LLM"], 32_768);
+	// a second probe for a different model must not drop the first
+	const second = saveSettings({ maxTokens: { "Another-LLM": 65_536 } }, file);
+	assert.deepEqual(second.maxTokens, { "Brand-New-LLM": 32_768, "Another-LLM": 65_536 });
+	const reloaded = loadSettings(file);
+	assert.deepEqual(reloaded.maxTokens, { "Brand-New-LLM": 32_768, "Another-LLM": 65_536 });
+});
+
+test("loadSettings drops junk maxTokens values (non-numeric, <1024) but keeps good ones", () => {
+	const file = tmpFile();
+	writeFileSync(
+		file,
+		JSON.stringify({
+			version: 1,
+			cacheRetention: "long",
+			maxTokens: { good: 4096, tiny: 100, notANumber: "999999", nul: null },
+		}),
+		"utf8",
+	);
+	const reloaded = loadSettings(file);
+	assert.deepEqual(reloaded.maxTokens, { good: 4096 });
+});
+
+// ---------------------------------------------------------------------------
 // store basics
 // ---------------------------------------------------------------------------
 

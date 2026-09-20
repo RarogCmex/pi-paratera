@@ -36,6 +36,11 @@ export interface ParateraSettings {
 	cacheRetention: CacheRetentionMode;
 	/** Persisted endpoint override; undefined = built-in default. */
 	baseUrl?: string;
+	/** Measured output caps per model id, from the free pre-inference probe
+	 *  (`/paratera models probe`): applied over family defaults for unknown
+	 *  ids on every catalog merge, so a probed cap survives refreshes and
+	 *  restarts. Entries below 1024 are treated as junk and dropped. */
+	maxTokens?: Record<string, number>;
 	updatedAt?: string;
 }
 
@@ -57,10 +62,19 @@ export function loadSettings(file: string = settingsPath()): ParateraSettings {
 		const parsed = JSON.parse(readFileSync(file, "utf8")) as Partial<ParateraSettings> | null;
 		if (!parsed || typeof parsed !== "object" || parsed.version !== 1) return { ...DEFAULT_SETTINGS };
 		const baseUrl = typeof parsed.baseUrl === "string" ? normalizeBaseUrl(parsed.baseUrl) : undefined;
+		const maxTokens: Record<string, number> = {};
+		if (parsed.maxTokens && typeof parsed.maxTokens === "object") {
+			for (const [id, value] of Object.entries(parsed.maxTokens)) {
+				if (typeof value === "number" && Number.isSafeInteger(value) && value >= 1024) {
+					maxTokens[id] = value;
+				}
+			}
+		}
 		return {
 			version: 1,
 			cacheRetention: parsed.cacheRetention === "long" ? "long" : "short",
 			...(baseUrl ? { baseUrl } : {}),
+			...(Object.keys(maxTokens).length ? { maxTokens } : {}),
 			...(typeof parsed.updatedAt === "string" ? { updatedAt: parsed.updatedAt } : {}),
 		};
 	} catch {
@@ -87,7 +101,12 @@ export function normalizeBaseUrl(value: string | undefined | null): string | und
 }
 
 export function saveSettings(
-	patch: { cacheRetention?: CacheRetentionMode; baseUrl?: string | null },
+	patch: {
+		cacheRetention?: CacheRetentionMode;
+		baseUrl?: string | null;
+		/** Merged into the stored map (never clears it — junk is filtered on load). */
+		maxTokens?: Record<string, number>;
+	},
 	file: string = settingsPath(),
 ): ParateraSettings {
 	const current = loadSettings(file);
@@ -97,10 +116,12 @@ export function saveSettings(
 	} else if (patch.baseUrl !== undefined) {
 		baseUrl = normalizeBaseUrl(patch.baseUrl) ?? baseUrl;
 	}
+	const maxTokens = { ...current.maxTokens, ...patch.maxTokens };
 	const next: ParateraSettings = {
 		version: 1,
 		cacheRetention: patch.cacheRetention ?? current.cacheRetention,
 		...(baseUrl ? { baseUrl } : {}),
+		...(Object.keys(maxTokens).length ? { maxTokens } : {}),
 		updatedAt: new Date().toISOString(),
 	};
 	mkdirSync(dirname(file), { recursive: true });
@@ -224,7 +245,13 @@ export function parateraCommands(): CommandSpec[] {
 		{
 			name: "models",
 			description: "Model catalog tools",
-			args: [{ name: "refresh", description: "Force GET /v1/models refresh and persist the overlay" }],
+			args: [
+				{ name: "refresh", description: "Force GET /v1/models refresh and persist the overlay" },
+				{
+					name: "probe <id>",
+					description: "Free output-cap probe of one model (pre-inference 400; no tokens spent)",
+				},
+			],
 		},
 		{
 			name: "transport",
