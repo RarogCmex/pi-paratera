@@ -6,7 +6,8 @@
  * `UND_ERR_CONNECT_TIMEOUT` / `UND_ERR_SOCKET` while curl to the same URL
  * connects in ~0.2–1.2s (observed live 2026-09-19). These are CONNECT-phase
  * failures — they happen before any request byte reaches the server, so
- * retrying is safe: no double-execution, no double-billing.
+ * retrying is safe: no double-execution, no double-billing. Headers/body
+ * timeouts are excluded on purpose (see CONNECT_ERROR_CODES below).
  *
  * pi-ai does NOT retry them. Its `retryProviderRequest` only retries errors
  * that look like provider errors (`isProviderError` requires `status` +
@@ -34,13 +35,14 @@
  */
 
 /** Connect/socket error codes worth retrying. All occur before the request is
- *  sent, so a retry cannot double-charge. Mirrors pi-nvidia-plus's
- *  PROXY_CONNECT_CODES, which lists the same undici/libuv connect failures. */
+ *  sent, so a retry cannot double-charge. Sourced from pi-nvidia-plus's
+ *  PROXY_CONNECT_CODES minus `UND_ERR_HEADERS_TIMEOUT`/`UND_ERR_BODY_TIMEOUT`:
+ *  those two can fire *after* the request already reached the server (it
+ *  accepted the connection but never finished responding), so a retry could
+ *  re-execute paid inference — they are deliberately left un-retried. */
 export const CONNECT_ERROR_CODES: ReadonlySet<string> = new Set([
 	"UND_ERR_CONNECT_TIMEOUT",
 	"UND_ERR_SOCKET",
-	"UND_ERR_HEADERS_TIMEOUT",
-	"UND_ERR_BODY_TIMEOUT",
 	"ECONNRESET",
 	"ECONNREFUSED",
 	"ENOTFOUND",
@@ -84,8 +86,6 @@ export interface ConnectRetryConfig {
 	minDelayMs: number;
 	/** Backoff ceiling, ms. */
 	maxDelayMs: number;
-	/** Injectable clock/backoff for tests. */
-	now?: () => number;
 	sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
 	/** Called before each scheduled retry. */
 	onRetry?: (info: { attempt: number; code: string; delayMs: number }) => void;

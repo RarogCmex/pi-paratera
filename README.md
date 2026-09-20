@@ -254,8 +254,11 @@ extension closes that gap at two layers (`transport.ts`):
 
 Retries are **safe by construction**: every retryable code (`CONNECT_ERROR_CODES`) is a
 connect/socket failure that fires *before* any request byte reaches the server, so a retry can
-never double-execute or double-bill. HTTP 429/500 are deliberately *not* retried here — the
-server already saw those requests, and pi-ai owns that policy. Likewise the dispatcher stops
+never double-execute or double-bill. Notably `UND_ERR_HEADERS_TIMEOUT` / `UND_ERR_BODY_TIMEOUT`
+are deliberately **not** retried even though undici classifies them as connect-phase errors —
+they can fire after the request already reached the server (which then never finished
+responding), so a retry could re-execute paid inference. HTTP 429/500 are likewise not retried
+here — the server already saw those requests, and pi-ai owns that policy. The dispatcher stops
 retrying the moment a response has started (mid-stream errors surface immediately).
 
 Policy: up to 2 retries, 400–5000 ms exponential backoff with jitter. When retries are
@@ -310,7 +313,7 @@ README together, and never introduce an unverified limit or effort value — pro
 | `index.ts` | The extension: verified catalog, `createParateraGatewayProvider`, hooks, `/paratera` command. Header comment holds all gateway facts. |
 | `settings.ts` | JSON store (`<agentDir>/paratera.json`), `/paratera` command catalog + autocomplete, pure payload helpers |
 | `transport.ts` | Transparent connect-retry: `withConnectRetry` for control-plane fetches, origin-scoped undici dispatcher for inference streams. Pure — undici is injected by the entrypoint |
-| `test/` | Offline tests (`provider.test.ts`, `settings.test.ts`) |
+| `test/` | Offline tests (`provider.test.ts`, `settings.test.ts`, `transport.test.ts`) |
 
 Settings resolve to `$PI_CODING_AGENT_DIR` or `~/.pi/agent`. A missing, corrupt, or
 foreign-version settings file degrades to defaults so pi startup can never break.

@@ -77,6 +77,15 @@ test("cause-chain walk terminates on a cyclic chain", () => {
 	assert.equal(connectErrorCode(a), undefined);
 });
 
+test("headers/body timeouts are deliberately NOT retryable", () => {
+	// Regression guard: UND_ERR_HEADERS_TIMEOUT / UND_ERR_BODY_TIMEOUT can
+	// fire AFTER the request already reached the server (it accepted the
+	// connection but never finished responding), so a retry could re-execute
+	// paid inference. Do not re-add them by copying pi-nvidia-plus's set.
+	assert.ok(!CONNECT_ERROR_CODES.has("UND_ERR_HEADERS_TIMEOUT"));
+	assert.ok(!CONNECT_ERROR_CODES.has("UND_ERR_BODY_TIMEOUT"));
+});
+
 test("every retryable code is a pre-response (connect/socket) failure", () => {
 	// These must all fire before the server sees the request, so retrying can
 	// never double-charge. An HTTP status (429/500) must NOT be in this set —

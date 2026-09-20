@@ -175,7 +175,10 @@
  * entrypoint through resolvePiUndici) retries connect errors on inference
  * streams too. Only pre-response connect/socket codes are retried — they fire
  * before any request byte is sent, so a retry can never double-execute or
- * double-bill; HTTP 429/500 stay pi-ai's business. Everything fails open: an
+ * double-bill; HTTP 429/500 stay pi-ai's business, and
+ * UND_ERR_HEADERS_TIMEOUT / UND_ERR_BODY_TIMEOUT are also left un-retried
+ * because they can fire after the request already reached the server.
+ * Everything fails open: an
  * unresolvable undici or any throw inside the wrapper passes the request
  * through untouched, and `/paratera transport status` reports it.
  *
@@ -257,6 +260,26 @@ export const BASE_URL_ENV = "PARATERA_BASE_URL";
 const KEY_VALIDATION_TIMEOUT_MS = 25_000;
 /** Timeout for the GET /models catalog fetch. */
 const FETCH_TIMEOUT_MS = 30_000;
+
+/** Human-readable reason from an unknown thrown value. */
+function errorMessage(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
+}
+
+/** Timeout-guarded fetch signal: `setTimeout`-based abort combined with an
+ *  optional caller signal. Always call `done()` in a `finally` to clear the
+ *  timer — the control-plane fetches below follow that pattern. */
+function connectSignals(
+	timeoutMs: number,
+	signal?: AbortSignal,
+): { signal: AbortSignal; done: () => void } {
+	const controller = new AbortController();
+	const timeout = setTimeout(() => controller.abort(), timeoutMs);
+	return {
+		signal: signal ? AbortSignal.any([signal, controller.signal]) : controller.signal,
+		done: () => clearTimeout(timeout),
+	};
+}
 
 /**
  * Effective endpoint: $PARATERA_BASE_URL env > persisted settings override
@@ -1279,7 +1302,9 @@ function guessEffort(id: string): ThinkingLevelMap | undefined {
 	return undefined;
 }
 
-function guessThinkingFormat(api: GatewayApi, id: string): CatalogEntry["compat"] {
+/** Guess the full compat block (maxTokensField, thinkingFormat, …) for an
+ *  unlisted/unprobed id, by API route and family. */
+function guessCompat(api: GatewayApi, id: string): CatalogEntry["compat"] {
 	if (api === "openai-responses") return { ...RESPONSES_COMPAT };
 	if (/^qwen/i.test(id)) return { ...CHAT_COMPAT, thinkingFormat: "qwen" as const };
 	if (/^glm-/i.test(id)) return { ...CHAT_COMPAT, thinkingFormat: "zai" as const };
@@ -1307,7 +1332,7 @@ export function unknownModelConfig(id: string, baseUrl: string, name?: string): 
 		cost: ZERO_COST,
 		contextWindow: 128_000,
 		maxTokens: 8_192,
-		compat: guessThinkingFormat(api, id) as Model<GatewayApi>["compat"],
+		compat: guessCompat(api, id) as Model<GatewayApi>["compat"],
 	};
 }
 
@@ -1392,9 +1417,7 @@ export async function validateGatewayKey(
 	options: ValidateKeyOptions = {},
 ): Promise<KeyValidationResult> {
 	const baseUrl = options.baseUrl ?? resolveBaseUrl();
-	const controller = new AbortController();
-	const timeout = setTimeout(() => controller.abort(), KEY_VALIDATION_TIMEOUT_MS);
-	const signal = options.signal ? AbortSignal.any([options.signal, controller.signal]) : controller.signal;
+	const { signal, done } = connectSignals(KEY_VALIDATION_TIMEOUT_MS, options.signal);
 	try {
 		const response = await (options.fetchImpl ?? defaultFetch)(`${baseUrl}/chat/completions`, {
 			method: "POST",
@@ -1407,9 +1430,9 @@ export async function validateGatewayKey(
 		if (response.ok || response.status === 400 || response.status === 500) return { status: "valid" };
 		return { status: "unavailable", reason: `HTTP ${response.status}` };
 	} catch (error) {
-		return { status: "unavailable", reason: error instanceof Error ? error.message : String(error) };
+		return { status: "unavailable", reason: errorMessage(error) };
 	} finally {
-		clearTimeout(timeout);
+		done();
 	}
 }
 
@@ -1439,9 +1462,7 @@ export async function probeBaseUrl(
 	url: string,
 	options: { apiKey?: string; fetchImpl?: typeof fetch; signal?: AbortSignal; timeoutMs?: number } = {},
 ): Promise<EndpointProbe> {
-	const controller = new AbortController();
-	const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? ENDPOINT_PROBE_TIMEOUT_MS);
-	const signal = options.signal ? AbortSignal.any([options.signal, controller.signal]) : controller.signal;
+	const { signal, done } = connectSignals(options.timeoutMs ?? ENDPOINT_PROBE_TIMEOUT_MS, options.signal);
 	try {
 		const headers: Record<string, string> = {};
 		if (options.apiKey) headers.Authorization = `Bearer ${options.apiKey}`;
@@ -1456,9 +1477,9 @@ export async function probeBaseUrl(
 		}
 		return { status: "ok", models: data.data.length };
 	} catch (error) {
-		return { status: "unreachable", reason: error instanceof Error ? error.message : String(error) };
+		return { status: "unreachable", reason: errorMessage(error) };
 	} finally {
-		clearTimeout(timeout);
+		done();
 	}
 }
 
@@ -1636,7 +1657,7 @@ function installTransportForOrigin(baseUrl: string): { installed: boolean; alrea
 		});
 		return { installed: result.installed, already: result.already };
 	} catch (err) {
-		return { installed: false, error: err instanceof Error ? err.message : String(err) };
+		return { installed: false, error: errorMessage(err) };
 	}
 }
 
@@ -1671,6 +1692,9 @@ export function createParateraGatewayProvider(options: ParateraGatewayOptions = 
 
 	const currentBaseUrl = (): string =>
 		sessionOverride ?? options.baseUrl ?? resolveBaseUrl(process.env, savedSettings);
+
+	/** True when the endpoint URL changed since the caller captured one. */
+	const baseUrlChanged = (captured: string): boolean => currentBaseUrl() !== captured;
 
 	const provider = createProvider<GatewayApi>({
 		id: PROVIDER_ID,
@@ -1708,9 +1732,14 @@ export function createParateraGatewayProvider(options: ParateraGatewayOptions = 
 						).trim();
 						if (!key) continue keyPrompt;
 						validateLoop: while (true) {
-							interaction.notify({ type: "progress", message: `Validating key against ${url} …` });
+							// The endpoint may have just been switched by `changeEndpoint`
+							// (the provider is already re-bound to it), so never validate
+							// against a stale captured URL — resolve the effective base URL
+							// on every pass.
+							const effectiveUrl = baseUrlChanged(url) ? currentBaseUrl() : url;
+							interaction.notify({ type: "progress", message: `Validating key against ${effectiveUrl} …` });
 							const result = await validateGatewayKey(key, {
-								baseUrl: url,
+								baseUrl: effectiveUrl,
 								fetchImpl,
 								signal: interaction.signal,
 							});
@@ -1909,9 +1938,9 @@ export default function paratera(pi: ExtensionAPI, options: ParateraExtensionOpt
 			// it also get transparent connect retries (the old origin stays
 			// guarded, which is harmless — it is simply no longer dialed).
 			if (transportEnabled) {
-				const next = endpoint().url;
-				guardOrigin(next);
-				transportStatus = installTransportForOrigin(next);
+				// installTransportForOrigin guards the new origin itself
+				// (before any fail-open early return) and is idempotent.
+				transportStatus = installTransportForOrigin(endpoint().url);
 			}
 		},
 	});
@@ -1921,9 +1950,9 @@ export default function paratera(pi: ExtensionAPI, options: ParateraExtensionOpt
 	// Governed by options.installTransport so tests never mutate the process-
 	// global dispatcher.
 	if (transportEnabled) {
-		const ep = endpoint().url;
-		guardOrigin(ep);
-		transportStatus = installTransportForOrigin(ep);
+		// installTransportForOrigin guards the effective origin itself
+		// (before any fail-open early return) and is idempotent.
+		transportStatus = installTransportForOrigin(endpoint().url);
 	}
 	pi.registerProvider(provider);
 
@@ -2086,8 +2115,10 @@ export default function paratera(pi: ExtensionAPI, options: ParateraExtensionOpt
 				ctx.ui.notify(`No saved endpoint override — already using ${endpoint().url} (${endpoint().source}).`, "info");
 				return;
 			}
+			const previous = settings.baseUrl;
 			settings = saveSettings({ baseUrl: null }, settingsFile);
 			provider.rebindBaseUrl(endpoint().url);
+			if (transportEnabled && previous) unguardOrigin(previous); // stop retry-guarding the abandoned origin
 			const ep = endpoint();
 			ctx.ui.notify(`Override cleared — now using ${ep.url} (${ep.source}), bound in-place.`, "info");
 			return;

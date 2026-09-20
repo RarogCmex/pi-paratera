@@ -119,6 +119,128 @@ const BASE = "https://gw.test/v1";
 // registration shape
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// login flow (validateLoop / keyPrompt / changeEndpoint) — regression tests
+// for the interactive state machine, driven through the real provider.
+// ---------------------------------------------------------------------------
+
+/** Scripted ProviderAuthInteraction: answers prompts from queues and records
+ *  everything the login flow shows the user. */
+function fakeInteraction(script: {
+	secrets?: string[];
+	selects?: string[];
+	texts?: string[];
+	signal?: AbortSignal;
+}) {
+	const notices: { type?: string; message: string }[] = [];
+	const prompts: { type: string; message: string }[] = [];
+	let secrets = [...(script.secrets ?? [])];
+	let selects = [...(script.selects ?? [])];
+	let texts = [...(script.texts ?? [])];
+	const interaction = {
+		signal: script.signal ?? new AbortController().signal,
+		notify: (event: { type: string; message: string }) => notices.push(event),
+		prompt: async (prompt: { type: string; message: string; options?: unknown }) => {
+			prompts.push(prompt);
+			if (prompt.type === "secret") {
+				const v = secrets.shift();
+				if (v === undefined) throw new Error("secret prompt exhausted");
+				return v;
+			}
+			if (prompt.type === "select") {
+				const v = selects.shift();
+				if (v === undefined) throw new Error("select prompt exhausted");
+				return v;
+			}
+			const v = texts.shift();
+			if (v === undefined) throw new Error("text prompt exhausted");
+			return v;
+		},
+	};
+	return { interaction, notices, prompts, exhausted: () => secrets.length + selects.length + texts.length };
+}
+
+test("login: a valid key is validated against the current endpoint", async () => {
+	const { impl, calls } = fetchStub({ status: 500, body: {} });
+	const provider = createParateraGatewayProvider({ fetchImpl: impl, settingsFile: isolatedSettingsFile() });
+	const f = fakeInteraction({ secrets: ["sk-good"] });
+	const cred = await provider.auth!.apiKey!.login!(f.interaction as never);
+	assert.deepEqual(cred, { type: "api_key", key: "sk-good" });
+	assert.equal(calls.length, 1);
+	assert.ok(calls[0].url.startsWith(DEFAULT_BASE_URL), "validated against the default endpoint");
+});
+
+test("login: rekey on an invalid key re-prompts, then succeeds", async () => {
+	// 401 (bad key) → user picks "rekey" → new secret → valid.
+	const { impl } = fetchStub([{ status: 401, body: {} }, { status: 500, body: {} }]);
+	const provider = createParateraGatewayProvider({ fetchImpl: impl, settingsFile: isolatedSettingsFile() });
+	const f = fakeInteraction({ secrets: ["sk-bad", "sk-good"], selects: ["rekey"] });
+	const cred = await provider.auth!.apiKey!.login!(f.interaction as never);
+	assert.deepEqual(cred, { type: "api_key", key: "sk-good" });
+	// The "The gateway rejected this key (401/403)" choice is a select PROMPT
+	// (not a notice) — assert it was offered with both options.
+	const rekeyPrompt = f.prompts.find(
+		(p) => p.type === "select" && /rejected this key/.test(p.message),
+	);
+	assert.ok(rekeyPrompt, "rejection surfaced as a select prompt");
+	assert.equal(f.prompts.filter((p) => p.type === "secret").length, 2, "key re-prompted once");
+});
+
+test("login: unreachable gateway can be saved without validation", async () => {
+	const { impl } = fetchStub(new Error("fetch failed"));
+	const provider = createParateraGatewayProvider({ fetchImpl: impl, settingsFile: isolatedSettingsFile() });
+	const f = fakeInteraction({ secrets: ["sk-maybe"], selects: ["save"] });
+	const cred = await provider.auth!.apiKey!.login!(f.interaction as never);
+	assert.deepEqual(cred, { type: "api_key", key: "sk-maybe" });
+});
+
+test("login: retry re-validates the same key after a network error", async () => {
+	const { impl, calls } = fetchStub([new Error("boom"), { status: 500, body: {} }]);
+	const provider = createParateraGatewayProvider({ fetchImpl: impl, settingsFile: isolatedSettingsFile() });
+	const f = fakeInteraction({ secrets: ["sk-x"], selects: ["retry"] });
+	const cred = await provider.auth!.apiKey!.login!(f.interaction as never);
+	assert.deepEqual(cred, { type: "api_key", key: "sk-x" });
+	assert.equal(calls.length, 2, "validated twice against the same endpoint");
+});
+
+test("login: reurl re-validates the key against the NEW endpoint (stale-url regression)", async () => {
+	// Regression: `url` was captured once at login() start, so after the
+	// endpoint switch the key was validated against the OLD base URL and the
+	// loop could never succeed for a key that only works on the new endpoint.
+	const MIRROR = "https://mirror.test/v1";
+	// Sequence: validation 401 on the default endpoint → reurl → (text prompt
+	// for the URL, probe ok) → re-validation must hit the MIRROR and pass.
+	const { impl, calls } = fetchStub([
+		{ status: 401, body: {} }, // validate key on default endpoint → invalid
+		{ status: 200, body: { data: [{ id: "GLM-4.6" }] } }, // probeBaseUrl of the mirror
+		{ status: 500, body: {} }, // re-validation on the mirror → valid
+	]);
+	const settingsFile = isolatedSettingsFile();
+	const provider = createParateraGatewayProvider({ fetchImpl: impl, settingsFile });
+	const f = fakeInteraction({ secrets: ["sk-mirror"], selects: ["reurl"], texts: [MIRROR] });
+	const cred = await provider.auth!.apiKey!.login!(f.interaction as never);
+	assert.deepEqual(cred, { type: "api_key", key: "sk-mirror" });
+	const urls = calls.map((c) => c.url);
+	assert.ok(urls[0].startsWith(DEFAULT_BASE_URL), "first validation on the default endpoint");
+	assert.ok(urls[1].startsWith(MIRROR), "mirror probed");
+	assert.ok(urls[2].startsWith(MIRROR), "REGRESSION: re-validation must use the NEW endpoint");
+	assert.ok(!urls.slice(1).some((u) => u.startsWith(DEFAULT_BASE_URL)), "no further calls to the old endpoint");
+	// The switch must also persist + rebind.
+	assert.equal(loadSettings(settingsFile).baseUrl, MIRROR, "endpoint persisted");
+	assert.equal((provider as unknown as { baseUrl?: string }).baseUrl, MIRROR, "provider rebound in-place");
+});
+
+test("login: reurl declines to switch when the user keeps the current endpoint", async () => {
+	const { impl, calls } = fetchStub([{ status: 401, body: {} }, { status: 500, body: {} }]);
+	const provider = createParateraGatewayProvider({ fetchImpl: impl, settingsFile: isolatedSettingsFile() });
+	// reurl → promptCustomEndpoint: empty text input = keep current → login
+	// falls back to keyPrompt with a fresh secret.
+	const f = fakeInteraction({ secrets: ["sk-a", "sk-b"], selects: ["reurl"], texts: [""] });
+	const cred = await provider.auth!.apiKey!.login!(f.interaction as never);
+	assert.deepEqual(cred, { type: "api_key", key: "sk-b" });
+	assert.ok(calls.every((c) => c.url.startsWith(DEFAULT_BASE_URL)), "endpoint never changed");
+});
+
 test("registers one native provider with both API surfaces", () => {
 	const fake = loadExtension();
 	assert.equal(fake.providers.size, 1);
