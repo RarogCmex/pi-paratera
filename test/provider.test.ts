@@ -280,6 +280,7 @@ test("both API routes are populated in the catalog", () => {
 test("registers before_provider_request + message_end hooks and /paratera command", () => {
 	const fake = loadExtension();
 	assert.equal(fake.handlers.get("before_provider_request")?.length, 1);
+	assert.equal(fake.handlers.get("cache_warming_decision")?.length, 1);
 	assert.equal(fake.handlers.get("message_end")?.length, 1);
 	assert.ok(fake.commands.has("paratera"), "/paratera command registered");
 });
@@ -1065,4 +1066,33 @@ test("before_provider_request injects retention only when enabled", async () => 
 	// an untouched payload must come back as undefined (no replacement)
 	const foreign: any = hook({ payload: { model: "Other-Model", messages: [] } } as never, fakeCtx().ctx as never);
 	assert.equal(foreign, undefined);
+});
+
+test("cache_warming_decision forces warm only for paratera with long retention", () => {
+	const file = isolatedSettingsFile();
+	saveSettings({ cacheRetention: "long" }, file);
+	const fake = createFakePi();
+	(extension as any)(fake.pi, { settingsFile: file, installTransport: false });
+	const hook = fake.handlers.get("cache_warming_decision")![0] as (...a: any[]) => any;
+
+	// our provider + long retention ⇒ warm (overrides pi's cost-based stop)
+	assert.deepEqual(
+		hook({} as never, fakeCtx({ model: { id: "GLM-4.6", provider: PROVIDER_ID } }).ctx as never),
+		{ action: "warm" },
+	);
+	// foreign provider ⇒ no override, pi's decision stands
+	assert.equal(
+		hook({} as never, fakeCtx({ model: { id: "m", provider: "other" } }).ctx as never),
+		undefined,
+	);
+
+	// short retention ⇒ no override even for our provider
+	saveSettings({ cacheRetention: "short" }, file);
+	const fake2 = createFakePi();
+	(extension as any)(fake2.pi, { settingsFile: file, installTransport: false });
+	const hook2 = fake2.handlers.get("cache_warming_decision")![0] as (...a: any[]) => any;
+	assert.equal(
+		hook2({} as never, fakeCtx({ model: { id: "GLM-4.6", provider: PROVIDER_ID } }).ctx as never),
+		undefined,
+	);
 });

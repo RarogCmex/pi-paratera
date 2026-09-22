@@ -2085,6 +2085,15 @@ export default function paratera(pi: ExtensionAPI, options: ParateraExtensionOpt
 		return payload === undefined ? undefined : (payload as typeof event.payload);
 	});
 
+	pi.on("cache_warming_decision", (_event, ctx) => {
+		// Only override for our own models: warming a 24h prefix cache is
+		// near-free here (gateway reports $0, retention verified on all 65
+		// models), so pi's default cost-based "stop" would be too conservative.
+		// When retention is not long we return undefined and keep pi's decision.
+		if ((ctx as ParateraCtx)?.model?.provider !== PROVIDER_ID) return;
+		if (effectiveCacheRetention().mode === "long") return { action: "warm" as const };
+	});
+
 	pi.on("message_end", (event, ctx) => {
 		const message = event.message;
 		if (!message || message.role !== "assistant" || message.stopReason !== "error") return;
