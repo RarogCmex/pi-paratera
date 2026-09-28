@@ -11,7 +11,7 @@ Pi provider extension for the **PARATERA MaaS** gateway — 北京并行科技�
 ## Install
 
 ```bash
-pi install npm:pi-paratera     # or: git clone … && pi install ./pi-paratera
+pi install git:github.com/RarogCmex/pi-paratera@main   # or: git clone … && pi install ./pi-paratera
 pi                             # then /login paratera and /model
 ```
 
