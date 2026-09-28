@@ -1,5 +1,5 @@
 {
-  "name": "pi-paratera",
+  "name": "@rarogcmex/pi-paratera",
   "version": "0.1.0",
   "description": "Pi provider extension for the PARATERA MaaS gateway (llmapi.paratera.com): Responses API first, chat-completions fallback, dynamic model refresh.",
   "type": "module",
@@ -58,5 +58,8 @@
     "@types/node": "24.6.2",
     "tsx": "4.20.6",
     "typescript": "5.9.3"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }
