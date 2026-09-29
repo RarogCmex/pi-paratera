@@ -880,6 +880,16 @@ export const CATALOG: CatalogEntry[] = [
 		reasoning: false,
 		input: ["text"],
 		cost: ZERO_COST,
+		// NOT MEASURED, and it contradicts the id's own name. All four ERNIE ids
+		// answer 401 "model does not exist" on the Responses route, so no probe ever
+		// produced a cap for this family; 32_768 / 12_288 is the -32K sibling's pair
+		// copied across. The honest reading of AGENTS.md ("no unverified limit") is
+		// that this row is a placeholder, not a fact — so it is labelled here and in
+		// the README's Models legend. Consequence if the real window is 128K: pi
+		// compacts roughly 4x earlier than it needs to. That is the safe direction
+		// (an early compaction is recoverable, an over-context request is billed),
+		// which is why it ships rather than being dropped. Probing it needs a key
+		// whose account is entitled to ERNIE at all.
 		contextWindow: 32_768,
 		maxTokens: 12_288,
 		compat: { ...CHAT_COMPAT },
