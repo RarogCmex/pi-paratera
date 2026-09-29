@@ -36,6 +36,7 @@
     "settings.ts",
     "transport.ts",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "scripts": {

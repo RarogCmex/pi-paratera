@@ -286,8 +286,8 @@ test("registers before_provider_request + message_end hooks and /paratera comman
 });
 
 test("the default base URL is the real public endpoint, not a placeholder", () => {
-	// Unlike Volcengine (per-subscription gateway ids), paratera ships one
-	// working URL, so no configuration is required out of the box.
+	// paratera publishes one shared endpoint rather than per-subscription
+	// gateway ids, so the shipped URL works with no configuration.
 	assert.equal(DEFAULT_BASE_URL, "https://llmapi.paratera.com/v1");
 	assert.ok(!/YOUR-|PLACEHOLDER/i.test(DEFAULT_BASE_URL));
 });

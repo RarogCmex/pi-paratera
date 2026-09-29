@@ -6,6 +6,11 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+Changes below are on `main` but not yet in a tagged release. The supported
+install path for this extension is `pi install
+git:github.com/RarogCmex/pi-paratera@main`, so `main` is what the README
+describes; the next tag will carry this block.
+
 ### Fixed
 
 - **Login flow validated the key against a stale endpoint URL after a switch**

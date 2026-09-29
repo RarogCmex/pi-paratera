@@ -1,7 +1,7 @@
 /**
  * In-pi settings for the PARATERA MaaS provider.
  *
- * Pattern follows pi-volcengine: a small JSON store under pi's agent config
+ * Shape: a small JSON store under pi's agent config
  * dir (`getAgentDir()`: $PI_CODING_AGENT_DIR, else ~/.pi/agent), a single
  * `/paratera` slash command with a subcommand tree + pure autocomplete, and
  * pure payload helpers that index.ts wires into `before_provider_request`.
@@ -11,10 +11,10 @@
  *     "baseUrl": "https://…/v1", "updatedAt": "..." }
  *
  * `baseUrl` is a persisted endpoint override: $PARATERA_BASE_URL env wins over
- * it, the built-in DEFAULT_BASE_URL applies when neither is set. Unlike
- * volcengine (per-subscription gateway ids) paratera publishes one shared
- * endpoint, so the shipped default is a REAL working URL and the override
- * exists for private/dedicated deployments and mirrors.
+ * it, the built-in DEFAULT_BASE_URL applies when neither is set. paratera
+ * publishes one shared endpoint rather than per-subscription gateway ids, so the
+ * shipped default is a REAL working URL and the override exists only for
+ * private/dedicated deployments and mirrors.
  *
  * `cacheRetention: "long"` makes the payload hook inject
  * `prompt_cache_retention: "24h"` (+ `prompt_cache_key` on chat routes) for

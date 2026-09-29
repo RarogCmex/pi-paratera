@@ -41,15 +41,16 @@
  *   - `reasoning.summary` and `include:["reasoning.encrypted_content"]` are
  *     accepted by every Responses model probed (GLM-5.3-Flash, GLM-5.2,
  *     Qwen3.8-Flash, Qwen3.7-Max, DeepSeek-V4-Flash, DeepSeek-V3.2,
- *     Kimi-K2.6, MiniMax-M3, MiniMax-M2.5) — unlike the Volcengine gateway,
- *     **no summary-stripping hook is needed**.
+ *     Kimi-K2.6, MiniMax-M3, MiniMax-M2.5), so **no summary-stripping hook is
+ *     needed** — the gateway accepts the fields rather than rejecting them.
  *   - developer and system roles both accepted.
  *   - NOT supported by: every GLM-4.x/4.5x/4.6/4.7 (upstream 404s on
  *     `/v4/responses`), GLM-4V and GLM-Z1 (upstream 401 身份验证失败), all four
  *     ERNIE (401 "model does not exist"), Kimi-K2.5 (400 "Agent capabilities
  *     are not enabled for the current model"), DeepSeek-R1/V3/V3.1/
- *     V3-250324 (500 当前用户未开通知识库问答功能 — the Volcengine upstream
- *     wants a knowledge-base feature this account lacks), Qwen-Long,
+ *     V3-250324 (500 当前用户未开通知识库问答功能 — the upstream requires a
+ *     knowledge-base feature, so accounts without it are refused; an
+ *     entitlement error, not a defect), Qwen-Long,
  *     GLM-Embedding/Rerank/ASR/CogView and the image/video models.
  *
  * Chat-completions route:
@@ -63,8 +64,9 @@
  *     emitted 38 tokens with `max_completion_tokens:1`, GLM-5.3-Flash emitted
  *     264), while `max_tokens` is validated and honored by every family —
  *     which is also why all the output caps below were discoverable from
- *     `max_tokens` 400-errors. Hence maxTokensField:"max_tokens" everywhere,
- *     the opposite of the Volcengine extension.
+ *     `max_tokens` 400-errors. Hence maxTokensField:"max_tokens" everywhere.
+ *     Note this is the opposite of the common OpenAI spelling: gateways that
+ *     honour `max_completion_tokens` are the norm, this one is not.
  *   - Empty `tool_calls:[]` on a replayed assistant message is REJECTED by
  *     Qwen ("Empty tool_calls") — pi-ai omits empty arrays, so no hook needed.
  *   - Assistant messages carrying `reasoning_content` are accepted on replay
@@ -107,8 +109,8 @@
  * Qwen3.8-Flash 116_572, MiniMax-M2.5 116_552, GLM-4.6 116_000. Values below
  * are family defaults that never fell below a measured bound; a 292k-token
  * input was correctly rejected by GLM-4.5-Flash, confirming enforcement
- * rather than silent truncation (the Volcengine gateway truncates qwen at
- * 800k instead).
+ * rather than silent truncation — which matters because a gateway that
+ * truncates quietly makes its published window unverifiable from the outside.
  *
  * Output caps: read from the gateway's own free 400-errors — the pre-inference
  * max_tokens=99999999 probe is rejected before any tokens are generated, and
@@ -132,8 +134,8 @@
  * image content outright ("content.type 参数非法，取值范围 ['text']").
  *
  * Billing: **all costs are reported as zero.** GET /v1/models returns only
- * id/object/created/owned_by — no credit multiplier (unlike the Volcengine
- * gateway) — and LiteLLM's admin endpoints are closed to this key
+ * id/object/created/owned_by — no credit multiplier — and LiteLLM's admin
+ * endpoints are closed to this key
  * (`/model/info` → "RBAC: access denied", `/key/info` → 404). paratera bills
  * in CNY per million tokens behind the console (ai.paratera.com), so no
  * trustworthy per-model price can be baked in. pi will show $0.00; treat
@@ -247,9 +249,9 @@ import { realpathSync } from "node:fs";
 const defaultFetch = withConnectRetryFetch(fetch, DEFAULT_CONNECT_RETRY);
 
 export const PROVIDER_ID = "paratera";
-/** The real public endpoint — paratera publishes one shared MaaS URL (unlike
- *  Volcengine's per-subscription gateway ids), so this ships working and needs
- *  no configuration. Overridable for private/dedicated deployments. */
+/** The real public endpoint — paratera publishes one shared MaaS URL rather
+ *  than per-subscription gateway ids, so this ships working and needs no
+ *  configuration. Overridable for private/dedicated deployments. */
 export const DEFAULT_BASE_URL = "https://llmapi.paratera.com/v1";
 export const API_KEY_ENV = "PARATERA_API_KEY";
 export const BASE_URL_ENV = "PARATERA_BASE_URL";
@@ -1696,7 +1698,7 @@ interface PiUndici {
  * Resolve pi's OWN undici copy. This extension has its own node_modules, so
  * importing "undici" here would get a different instance whose
  * `setGlobalDispatcher` does not affect pi's fetch. We load it from pi's entry
- * point instead — the same approach pi-nvidia-plus uses.
+ * point instead, so the dispatcher we install is the one pi's fetch consults.
  */
 export function resolvePiUndici(): { undici?: PiUndici; error?: string } {
 	const candidates: string[] = [];
@@ -2102,9 +2104,9 @@ export default function paratera(pi: ExtensionAPI, options: ParateraExtensionOpt
 		const message = event.message;
 		if (!message || message.role !== "assistant" || message.stopReason !== "error") return;
 		// Provider is taken from the MESSAGE; ctx.model is only a fallback for
-		// legacy messages that omit it. Using ctx.model as an OR-condition (as
-		// the reference extension does) would let us rewrite another provider's
-		// error whenever paratera happens to be the selected model.
+		// legacy messages that omit it. Treating ctx.model as an OR-condition
+		// would let us rewrite another provider's error whenever paratera
+		// happens to be the selected model.
 		if ((message.provider ?? ctx?.model?.provider) !== PROVIDER_ID) return;
 		const rewritten = normalizeOverflowError(message.errorMessage ?? "");
 		if (rewritten === null) return;

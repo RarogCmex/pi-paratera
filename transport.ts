@@ -20,7 +20,7 @@
  *      refresh). Pure and directly unit-testable.
  *
  *   2. `ensureTransportInstalled` — an origin-scoped undici dispatcher
- *      wrapper (pi-nvidia-plus pattern) that transparently retries connect
+ *      wrapper that transparently retries connect
  *      errors on inference streams too, which go through the OpenAI SDK →
  *      global fetch → undici and cannot be wrapped any other way. undici is
  *      injected by the caller (the entrypoint resolves pi's own copy), so this
@@ -35,11 +35,12 @@
  */
 
 /** Connect/socket error codes worth retrying. All occur before the request is
- *  sent, so a retry cannot double-charge. Sourced from pi-nvidia-plus's
- *  PROXY_CONNECT_CODES minus `UND_ERR_HEADERS_TIMEOUT`/`UND_ERR_BODY_TIMEOUT`:
- *  those two can fire *after* the request already reached the server (it
- *  accepted the connection but never finished responding), so a retry could
- *  re-execute paid inference — they are deliberately left un-retried. */
+ *  sent, so a retry cannot double-charge. This is undici's usual connect-error
+ *  set minus `UND_ERR_HEADERS_TIMEOUT`/`UND_ERR_BODY_TIMEOUT`: those two can fire
+ *  *after* the request already reached the server (it accepted the connection but
+ *  never finished responding), so a retry could re-execute paid inference — they
+ *  are deliberately left un-retried even though undici classifies them as
+ *  connect-phase errors. */
 export const CONNECT_ERROR_CODES: ReadonlySet<string> = new Set([
 	"UND_ERR_CONNECT_TIMEOUT",
 	"UND_ERR_SOCKET",

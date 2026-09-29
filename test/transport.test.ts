@@ -81,7 +81,8 @@ test("headers/body timeouts are deliberately NOT retryable", () => {
 	// Regression guard: UND_ERR_HEADERS_TIMEOUT / UND_ERR_BODY_TIMEOUT can
 	// fire AFTER the request already reached the server (it accepted the
 	// connection but never finished responding), so a retry could re-execute
-	// paid inference. Do not re-add them by copying pi-nvidia-plus's set.
+	// paid inference. Do not re-add them by copying undici's usual
+	// connect-error set wholesale — it includes both.
 	assert.ok(!CONNECT_ERROR_CODES.has("UND_ERR_HEADERS_TIMEOUT"));
 	assert.ok(!CONNECT_ERROR_CODES.has("UND_ERR_BODY_TIMEOUT"));
 });

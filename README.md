@@ -1,21 +1,43 @@
 # pi-paratera
 
-Pi provider extension for the **PARATERA MaaS** gateway — 北京并行科技股份有限公司 / Beijing PARATERA Tech Corp., Ltd.
+A provider extension for [pi](https://github.com/earendil-works/pi)
+(`@earendil-works/pi-coding-agent` — the coding agent this plugs into) targeting the
+**PARATERA MaaS** gateway: 北京并行科技股份有限公司 / Beijing PARATERA Tech Corp.,
+Ltd. npm name: `@rarogcmex/pi-paratera`.
 
 - **Endpoint:** `https://llmapi.paratera.com/v1` (shipped as the default; no configuration needed)
 - **Gateway:** LiteLLM Proxy `1.89.0` behind istio-envoy (read from the public `/openapi.json`)
-- **Console / keys:** `ai.paratera.com` → `sk-…`
+- **Console / keys:** `ai.paratera.com` → `sk-…`. The account must be provisioned
+  for the models you intend to use: this gateway is a *proxy*, so entitlement and
+  capability are decided per upstream model, not per gateway.
 - **Models:** 65 registered (33 on the OpenAI **Responses API**, 32 on **chat completions**)
-- **Node:** ≥ 22.19, ESM, strict TypeScript, no build step — pi executes the `.ts` directly
+- **Cost:** reported as `$0.00` for every model. The gateway publishes no rate —
+  `GET /v1/models` returns only `id`/`object`/`created`/`owned_by`, and no body
+  discloses a credit multiplier. Your PARATERA balance is still debited per
+  request; pi simply cannot show you how much.
+- **Requirements:** Node ≥ 22.19, ESM, strict TypeScript, no build step — pi
+  executes the `.ts` directly. Tested against pi **0.87.0** (pinned in
+  `devDependencies`); `peerDependencies` stays `*`, and the extension uses
+  version-sensitive host APIs (`cache_warming_decision`,
+  `modelRegistry.refresh({force})`, `getAgentDir`), so an older pi may load it and
+  silently degrade rather than refuse.
 
 ## Install
 
 ```bash
-pi install git:github.com/RarogCmex/pi-paratera@main   # or: git clone … && pi install ./pi-paratera
-pi                             # then /login paratera and /model
+pi install git:github.com/RarogCmex/pi-paratera@main
 ```
 
-Or set the key in the environment instead of `/login`:
+or from a checkout:
+
+```bash
+git clone https://github.com/RarogCmex/pi-paratera.git
+pi install ./pi-paratera
+```
+
+Then start `pi` and run `/login paratera` (pi's own slash command, typed inside
+pi) and pick a model with `/model`. Or set the key in the environment instead of
+`/login`:
 
 ```bash
 export PARATERA_API_KEY=sk-…
@@ -61,6 +83,24 @@ Context/max-output come from the gateway's own enforced caps where it declares o
 *Verified facts* below. 49 models have a **measured** cap (read from the gateway's free
 pre-inference 400-errors); 16 accepted an absurd `max_tokens` and enforce no cap upstream, so
 they carry a family default marked † below.
+
+**Vision (`Vision: yes`) means base64 data URIs.** Remote image URLs 400 on
+several upstreams (`图片输入格式/解析错误`) because the gateway cannot always fetch
+them, so an image has to be inlined as a data URI. Pasting a URL gets you an
+opaque Chinese 400. Verified with a local data-URI probe on 2026-09-19 for
+every id marked `yes`; `GLM-4.5-Air`/`-AirX` reject image content outright
+(`content.type 参数非法，取值范围 ['text']`) and are text-only here.
+
+**Two caveats on the `Thinking: yes` rows.** The `zai` thinking format
+(`thinking:{type:"disabled"}`) was verified live only on **GLM-4.5x/4.6**.
+`GLM-4-Long`, `GLM-4.7` and `GLM-5-Turbo` carry the same format as a *family
+extrapolation*, not a measurement — if an upstream rejects
+`thinking:{type:"disabled"}` the request 400s rather than degrading. And
+`GLM-5-Turbo` has no `/responses` route at all, so it is chat-only. `ERNIE-4.5-Turbo-128K`
+is published with a **32 768** context window despite its name: that is the value
+the `-32K` sibling carries, no measurement covers ERNIE, and the practical
+consequence is that pi starts compacting roughly 4× earlier than the name
+suggests.
 
 **DeepSeek**
 
@@ -157,10 +197,11 @@ they carry a family default marked † below.
 | `ERNIE-4.5-Turbo-VL-32K` | Chat | — | yes | 32,768 | 12,288 |
 | `ERNIE-5.0-Thinking-Preview` | Chat | yes | — | 131,072 | 65,536 |
 
-### Not registered (31 of the 96 listed ids)
+### Not registered (32 of the 96 listed ids)
 
 `GET /v1/models` lists 96 ids, but these are deliberately excluded and also blocked from
-auto-registration when the catalog refreshes:
+auto-registration when the catalog refreshes (`SKIP_MODEL_IDS`, 32 entries — the 31 below
+plus `auto`, the gateway's routing pseudo-entry, which is not a model):
 
 - **Not chat models** — embeddings/rerank/ASR/OCR: `GLM-Embedding-2`, `GLM-Embedding-3`,
   `GLM-Rerank`, `GLM-ASR-2512`, `GLM-CogView3-Flash`, `DeepSeek-OCR`, `PaddleOCR-VL-0.9B`,
@@ -175,113 +216,100 @@ auto-registration when the catalog refreshes:
 - **No function calling** — unusable for a coding agent: `Baichuan-M2`, `Baichuan-M3`
   ("Model `Baichuan-M2` does not support function calls").
 
-## Verified facts about this gateway
+## Limitations
 
-All of the following were measured against the live endpoint on **2026-09-19**. They are also
-recorded in the header comment of `index.ts`, which is the authoritative copy.
+Everything here was measured against the live endpoint on **2026-09-19**. The
+measurement record — per-family thinking formats, the probe transcript numbers,
+the exact error strings — lives in the header comment of `index.ts`, which is the
+authoritative copy; this section is only what a user has to know.
 
-**Responses API is per-model, not per-gateway.** 33 of 65 models serve `/responses`; the rest
-404 on `/v4/responses` (GLM-4.x line), 401 (GLM-4V/GLM-Z1, all four ERNIE), or 400 with
-"Agent capabilities are not enabled" (Kimi-K2.5). DeepSeek-R1/V3/V3.1/V3-250324 return
-500 `当前用户未开通知识库问答功能` — the Volcengine upstream wants a knowledge-base feature this
-account lacks. Verified working end-to-end through pi-ai (streaming, thinking blocks, tool-call
-round-trips): GLM-5.3-Flash, Qwen3.8-Flash, DeepSeek-V4-Flash, MiniMax-M3, Kimi-K2.6, GLM-5.2,
-DeepSeek-V3.2, Qwen3.5-122B-A10B, Qwen3.7-Plus, MiniMax-Text-01, DeepSeek-V3.2-Instruct.
+**Cost is reported as zero, and that is not a promise of free.** The gateway
+publishes no rate and no response body discloses one, so every model carries
+`$0.00`. Requests are billed against your PARATERA account normally.
 
-**`max_tokens` is the only reliable output cap.** `max_completion_tokens` is silently *ignored*
-by several upstreams — measured: Qwen3.8-Flash emitted 38 tokens with
-`max_completion_tokens:1`, GLM-5.3-Flash emitted 264 — while `max_tokens` is validated and
-honored by every family. This is the opposite of the Volcengine extension, which pins
-`max_completion_tokens`. All chat models here set `maxTokensField:"max_tokens"`.
+**Thinking cannot be disabled on some families.** MiniMax M1-80k / M2 / M2.5 /
+M2.7 reason at every level *including* `none`, and GLM-5.3 ignores
+`reasoning:{effort:"none"}` (though it honours `low`). For those, pi's `off`
+level is deliberately not offered — offering it would promise a switch the
+gateway does not have.
 
-**The gateway enforces input caps** with a clean pre-inference 400
-(`OpenAIException - Prompt exceeds max length`), rather than silently truncating. A ~292k-token
-input to GLM-4.5-Flash was rejected in ~10s. This is what made context windows measurable:
-verified accepted `prompt_tokens` lower bounds are DeepSeek-V4-Flash 233,049, GLM-5.3-Flash
-174,778, Kimi-K2.6 174,776, Qwen3.8-Flash 116,572, MiniMax-M2.5 116,552, GLM-4.6 ~116,000.
-Values in the table are family defaults that never fell below a measured bound.
+**Vision needs base64 data URIs.** Remote image URLs 400 on several upstreams
+because the gateway cannot always fetch them. See the note under § Models.
 
-**Thinking control differs per family**, so each gets its own level map and format:
+**`max_tokens`, never `max_completion_tokens`.** Several upstreams silently
+*ignore* `max_completion_tokens` (measured: Qwen3.8-Flash emitted 38 tokens with
+the cap set to 1; GLM-5.3-Flash emitted 264), while `max_tokens` is validated and
+honoured by every family. Every chat model here pins `maxTokensField:"max_tokens"`.
+An ignored cap looks exactly like a working request, which is why this is not
+negotiable.
 
-| Family | Chat-route control | Verified behavior |
-|---|---|---|
-| GLM-4.5x/4.6 (`zai`) | `thinking:{type:"disabled"}` | ⇒ `reasoning_content` length 0. `reasoning_effort` is accepted but *ignored* (rc=25 identically for every level) |
-| GLM-5.1/5.2/5.3-Flash | `reasoning:{effort:"none"}` | ⇒ 0 reasoning chars |
-| GLM-5.3 | `reasoning:{effort:"none"}` | **ignored** (1297 chars); `low` ⇒ 0, so `off` is unavailable |
-| Qwen (`qwen`) | `enable_thinking:false` | ⇒ rc=0 |
-| DeepSeek (`deepseek`) | `thinking:{type:"disabled"}` | ⇒ rc=0, incl. DeepSeek-R1 |
-| Kimi-K2.6/K3 | `reasoning_effort` | **`max` is rejected** — allowed set is `none/minimal/low/medium/high/xhigh`, so `max` folds to `xhigh` |
-| MiniMax M1-80k/M2/M2.5/M2.7 | — | cannot disable thinking: every level *and* `none` still reason (280–1463 chars), so `off` is unavailable |
-| MiniMax-M3 | — | returned zero `reasoning_content` on every probe ⇒ treated as non-reasoning |
-| ERNIE-5.0-Thinking-Preview | `thinking:{type:"disabled"}` | ⇒ rc=0; `xhigh`/`max` left unavailable because they were not probed |
+**The Responses API is per-model, not per-gateway.** 33 of 65 models serve
+`/responses`; the rest fail per family — 404 on `/v4/responses` (the GLM-4.x
+line), 401 (GLM-4V, GLM-Z1, all four ERNIE), 400 `Agent capabilities are not
+enabled` (Kimi-K2.5), or 500 `当前用户未开通知识库问答功能` for DeepSeek-R1 /
+V3 / V3.1 / V3-250324 — the last one means the upstream requires a
+knowledge-base feature that accounts without it do not have, so it is an
+entitlement error, not a bug.
 
-**Prompt caching works and is reportable.** `usage.prompt_tokens_details.cached_tokens` is
-populated (seen on GLM and Qwen chat routes). `prompt_cache_retention:"24h"` plus
-`prompt_cache_key` were accepted (200) on every route probed — chat: GLM-4.5-Flash, GLM-4.6,
-Qwen3.8-Flash, Kimi-K2.6, MiniMax-M2.5, DeepSeek-V4-Flash, ERNIE-4.5-Turbo-32K; responses:
-GLM-5.3-Flash, Qwen3.8-Flash, DeepSeek-V4-Flash, MiniMax-M3, Kimi-K2.6 — so
-`supportsLongCacheRetention:true` across the whole catalog.
+**Context windows are lower bounds, not exact sizes.** The gateway enforces input
+caps with a clean pre-inference 400 (`OpenAIException - Prompt exceeds max
+length`) instead of truncating, which makes windows measurable from rejections.
+The published values are family defaults that never fell below a measured bound;
+the measured bounds themselves (e.g. DeepSeek-V4-Flash accepted 233 049 prompt
+tokens) are in the `index.ts` header.
 
-**`store:false` is not honored.** The response echoes `"store":true` and
-`GET /responses/{id}` fails pydantic validation, so retrieval is unavailable. Harmless for pi,
-which is stateless-by-payload and sends the full context every turn.
+**`store:false` is not honoured.** The response echoes `"store":true` and
+`GET /responses/{id}` fails validation, so response retrieval is unavailable.
+Harmless here: pi is stateless-by-payload and resends the full context each turn.
 
-**SSE has no `event:` lines.** LiteLLM emits `data:` frames only, with the event name inside the
-JSON `type` field. pi-ai survives this because it drives `/responses` through the official
-OpenAI SDK (`client.responses.create`), not a hand-rolled parser.
+**Rate limits must not trigger compaction.** Two live strings are capacity
+messages, not overflow — `all candidate slots are busy` and `Deployment over
+defined TPM/RPM limit`. The `message_end` hook normalizes only genuine overflow
+(`Prompt exceeds max length`, `max_tokens参数非法`, `您已超过输入 tokens 配额`)
+onto pi's `context_length_exceeded` marker, so a busy gateway can never be
+laundered into a compaction loop.
 
-**`reasoning.summary` and `include:["reasoning.encrypted_content"]` are accepted** by every
-Responses model probed — so, unlike the Volcengine extension, no summary-stripping payload hook
-is needed.
+**Network to this endpoint is flaky, and the extension absorbs it.** undici
+(pi's bundled fetch) intermittently fails with `UND_ERR_CONNECT_TIMEOUT` /
+`UND_ERR_SOCKET` while `curl` to the same URL connects in ~0.2–1.2 s, and some
+inference calls stall past 45 s. pi-ai does not retry these: its retry layer
+requires `status` + `headers`, and a connect failure is a bare
+`TypeError: fetch failed`, so the whole turn would fail. `transport.ts` closes
+that gap at two layers — `withConnectRetry` around every control-plane fetch (key
+validation, endpoint probe, catalog refresh), and an origin-scoped undici
+dispatcher for inference streams, which reach the network through the OpenAI SDK
+and cannot be wrapped any other way. Traffic to any other origin delegates to
+pi's previous dispatcher untouched.
 
-**Rate limits are transient, not overflow.** Two distinct live strings must never trigger
-auto-compaction: `all candidate slots are busy` and `Deployment over defined TPM/RPM limit`.
-The `message_end` hook normalizes only genuine overflow (`Prompt exceeds max length`,
-`max_tokens参数非法`, `您已超过输入 tokens 配额`) onto pi's `context_length_exceeded` marker.
+Retries are safe by construction: every retried code is a connect/socket failure
+that fires *before* a request byte reaches the server, so a retry cannot
+double-execute or double-bill. `UND_ERR_HEADERS_TIMEOUT` / `UND_ERR_BODY_TIMEOUT`
+are deliberately **excluded** even though undici classifies them as connect-phase
+errors — they can fire after the server already received the request, so retrying
+could re-execute paid inference. HTTP 429/500 are likewise not retried here; the
+server saw those, and pi-ai owns that policy. The dispatcher stops retrying the
+moment a response has started. Policy: up to 2 retries, 400–5000 ms exponential
+backoff with jitter.
 
-**Network to this endpoint is flaky — handled transparently.** undici
-(pi-coding-agent's bundled fetch) intermittently fails with `UND_ERR_CONNECT_TIMEOUT` /
-`UND_ERR_SOCKET` while curl to the same URL connects in ~0.2–1.2s, and some inference calls
-stall past 45s.
-
-pi-ai does **not** retry these: its `retryProviderRequest` only retries errors that look like
-provider errors (it requires `status` + `headers`), but a connect failure is a bare
-`TypeError: fetch failed` with a `cause.code`, so it is rethrown and the whole turn fails. This
-extension closes that gap at two layers (`transport.ts`):
-
-- **Control plane** (key validation, endpoint probe, catalog refresh) — every fetch is wrapped in
-  `withConnectRetry`, so `/paratera keys check` and startup catalog refresh survive a dropped
-  connection.
-- **Inference streams** (which go through the OpenAI SDK → global fetch → undici and cannot be
-  wrapped any other way) — an origin-scoped undici dispatcher retries connect errors on requests
-  to the gateway origin only. All other traffic delegates to pi's previous dispatcher untouched.
-
-Retries are **safe by construction**: every retryable code (`CONNECT_ERROR_CODES`) is a
-connect/socket failure that fires *before* any request byte reaches the server, so a retry can
-never double-execute or double-bill. Notably `UND_ERR_HEADERS_TIMEOUT` / `UND_ERR_BODY_TIMEOUT`
-are deliberately **not** retried even though undici classifies them as connect-phase errors —
-they can fire after the request already reached the server (which then never finished
-responding), so a retry could re-execute paid inference. HTTP 429/500 are likewise not retried
-here — the server already saw those requests, and pi-ai owns that policy. The dispatcher stops
-retrying the moment a response has started (mid-stream errors surface immediately).
-
-Policy: up to 2 retries, 400–5000 ms exponential backoff with jitter. When retries are
-exhausted, the final error is rewritten into an actionable message (URL + code + "usually
-transient") with `.code` and `.cause` preserved; undici wraps it, but Node prints the cause
-chain, so users see the explanation rather than a bare `fetch failed`.
-
-Everything fails open: if pi's undici cannot be resolved, or anything throws inside the wrapper,
-requests pass through unchanged and only `transport status` reports it. Timeouts are generous
-(25s key probe, 30s catalog, 25s endpoint probe), a failed catalog fetch keeps the static
-baseline, and an unreachable key probe reports `unavailable` (never `invalid`).
+Everything fails open. If pi's undici cannot be resolved, or anything throws
+inside the wrapper, requests pass through unchanged and only `/paratera transport
+status` reports it. Timeouts are generous (25 s key probe, 30 s catalog, 25 s
+endpoint probe), a failed catalog fetch keeps the static baseline, and an
+unreachable key probe reports `unavailable` — never `invalid`. When retries are
+exhausted the final error is rewritten into an actionable message (URL + code +
+"usually transient") with `.code` and `.cause` preserved, so Node prints the cause
+chain instead of a bare `fetch failed`.
 
 `/paratera transport status` shows the install state and the last retried error;
 `transport off` disables retries for the session (persist across restarts with
 `PARATERA_TRANSPORT_RETRY=off`).
 
 **Key validation costs nothing.** `POST {}` to `/chat/completions` returns 500
-(`Router.acompletion() missing 1 required positional argument: 'messages'`) for a valid key and
-401 (`Invalid proxy server token passed … LiteLLM_VerificationTokenTable`) for an invalid one.
+(`Router.acompletion() missing 1 required positional argument: 'messages'`) for a
+valid key and 401 for an invalid one — a pre-inference rejection, so `/login` and
+`/paratera keys check` are free. This is the *only* operation in the plugin that
+is unconditionally free; `/paratera models probe <id>` is not (see § Commands).
+
 
 ## Development
 
@@ -290,11 +318,16 @@ npm install
 npm run check      # typecheck + offline tests — must be green before committing
 ```
 
+Prerequisites are ordinary: `npm install` resolves everything, because
+`@earendil-works/pi-ai`, `@earendil-works/pi-coding-agent`, `@types/node`, `tsx`
+and `typescript` are real `devDependencies` here (pinned to the 0.87.0 line the
+extension was tested against) and `package-lock.json` is committed. Node ≥ 22.19.
+
 Tests are **strictly offline** (`node:test` via tsx). Live requests spend real credits and this
 endpoint rate-limits, so E2E runs only on explicit request:
 
 ```bash
-set -a && . ./secret.env && set +a && export PARATERA_API_KEY="$KEY"
+export PARATERA_API_KEY=sk-…      # your own key; nothing in the repo supplies one
 npx tsx -e 'import("./index.ts").then(async m=>{
   const p=m.createParateraGatewayProvider({});
   const {createModels}=await import("@earendil-works/pi-ai");
