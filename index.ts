@@ -1451,10 +1451,14 @@ export async function validateGatewayKey(
 
 const MODEL_PROBE_TIMEOUT_MS = 25_000;
 
-/** A one-message, one-token chat completion with `max_tokens: 99_999_999`.
+/** A one-message chat completion with `max_tokens: 99_999_999`.
  *  A capped upstream rejects it in a pre-inference 400 whose message names
- *  the real cap, without generating any tokens; an uncapped upstream accepts
- *  the value (and emits at most 1 token, keeping the cost at most ~1 token). */
+ *  the real cap, without generating any tokens — that path is free.
+ *  An uncapped upstream ACCEPTS it and generates a real completion, which is
+ *  billed: `max_tokens` here is an upper bound, not a limit on what comes back,
+ *  and for always-on reasoners the reasoning tokens are billed too. Nothing in
+ *  this body bounds generation (no `stop`, no early abort), so the probe is
+ *  free only when the gateway rejects it. */
 const MODEL_PROBE_BODY = JSON.stringify({
 	model: "MODEL_ID", // replaced by probeModelLimits
 	messages: [{ role: "user", content: "hi" }],
@@ -2197,7 +2201,7 @@ export default function paratera(pi: ExtensionAPI, options: ParateraExtensionOpt
 		if (sub === "probe") {
 			const id = parts.slice(1).join(" ");
 			if (!id) {
-				ctx.ui.notify("Usage: models probe <id> — free output-cap probe of one model", "warning");
+				ctx.ui.notify("Usage: models probe <id> — output-cap probe of one model (free only when the gateway rejects it pre-inference)", "warning");
 				return;
 			}
 			const key = await ctx.modelRegistry.getApiKeyForProvider(PROVIDER_ID);
@@ -2205,7 +2209,7 @@ export default function paratera(pi: ExtensionAPI, options: ParateraExtensionOpt
 				ctx.ui.notify(`No API key resolved — run /login paratera or set $${API_KEY_ENV}`, "warning");
 				return;
 			}
-			ctx.ui.notify(`Probing ${id} (max_tokens:99999999, rejected pre-inference — no tokens spent)…`, "info");
+			ctx.ui.notify(`Probing ${id} (max_tokens:99999999 — free if the gateway rejects pre-inference; an uncapped model generates a billed completion)…`, "info");
 			const probe = await probeModelLimits(id, { apiKey: key, baseUrl: endpoint().url, fetchImpl, signal: ctx.signal });
 			if (probe.status === "capped" && probe.maxTokens !== undefined) {
 				provider.persistMeasuredCap(id, probe.maxTokens);
@@ -2220,7 +2224,7 @@ export default function paratera(pi: ExtensionAPI, options: ParateraExtensionOpt
 				);
 			} else if (probe.status === "uncapped") {
 				ctx.ui.notify(
-					`${id}: accepted max_tokens:99999999 — no upstream cap (at most 1 token was generated).`,
+					`${id}: accepted max_tokens:99999999 — no upstream cap. A real completion was generated and billed for this probe.`,
 					"info",
 				);
 			} else if (probe.status === "invalid-key") {

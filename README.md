@@ -30,7 +30,7 @@ export PARATERA_API_KEY=sk-…
 | `/paratera url` `status` / `set` / `check` / `reset` | Probe and persist a custom endpoint (private/mirror deployments) |
 | `/paratera keys check` | Validate the resolved key against the gateway, zero inference spent |
 | `/paratera models refresh` | Force `GET /v1/models` and persist the overlay |
-| `/paratera models probe <id>` | Free output-cap probe of one model (`max_tokens:99999999` is rejected pre-inference; capped upstreams name their cap, uncapped ones cost at most 1 token). A parsed cap is saved and applied over the family default in future catalog merges |
+| `/paratera models probe <id>` | Output-cap probe of one model. Capped upstreams reject `max_tokens:99999999` pre-inference and name their cap — that path costs nothing. **Uncapped upstreams accept it and generate a real, billed completion** (reasoning tokens included for always-on reasoners). A parsed cap is saved and applied over the family default in future catalog merges |
 | `/paratera transport` `status` / `on` / `off` | Inspect or toggle the transparent connect-retry layer |
 
 `/paratera url set` probes a candidate with `GET /models` **before** saving and rebinds live

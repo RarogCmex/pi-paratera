@@ -249,7 +249,7 @@ export function parateraCommands(): CommandSpec[] {
 				{ name: "refresh", description: "Force GET /v1/models refresh and persist the overlay" },
 				{
 					name: "probe <id>",
-					description: "Free output-cap probe of one model (pre-inference 400; no tokens spent)",
+					description: "Output-cap probe of one model (free when rejected pre-inference; an uncapped model generates a billed completion)",
 				},
 			],
 		},

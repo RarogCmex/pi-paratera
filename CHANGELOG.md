@@ -32,10 +32,10 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
-- **`/paratera models probe <id>`** — free output-cap probe for a single
+- **`/paratera models probe <id>`** — output-cap probe for a single
   model: sends `max_tokens: 99999999`, which capped upstreams reject in a
-  pre-inference 400 that names the enforced cap (no tokens generated);
-  uncapped upstreams accept it (at most 1 output token is billed).
+  pre-inference 400 that names the enforced cap (no tokens generated, free);
+  uncapped upstreams accept it and generate a real, billed completion.
   A parsed cap is persisted to `<agentDir>/paratera.json` (`maxTokens` map,
   junk values filtered) and applied over the family default in every future
   catalog merge, so probed caps survive refreshes and restarts. Exposed as
