@@ -17,7 +17,10 @@ Ltd. npm name: `@rarogcmex/pi-paratera`.
   request; pi simply cannot show you how much.
 - **Requirements:** Node ≥ 22.19, ESM, strict TypeScript, no build step — pi
   executes the `.ts` directly. Tested against pi **0.87.0** (pinned in
-  `devDependencies`); `peerDependencies` stays `*`, and the extension uses
+  `devDependencies`) and, out of tree, pi **0.99.1** — 2026-09-30, a scratch clone
+  with the two pi packages swapped for a global 0.99.1: typecheck plus 157/157
+  green (the pin in this tree stays 0.87.0); `peerDependencies` stays `*`, and the
+  extension uses
   version-sensitive host APIs (`cache_warming_decision`,
   `modelRegistry.refresh({force})`, `getAgentDir`), so an older pi may load it and
   silently degrade rather than refuse.
