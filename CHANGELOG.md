@@ -28,6 +28,18 @@ describes; the next tag will carry this block.
 
 ### Changed
 
+- **Host pin raised to pi 1.0.0** (`@earendil-works/pi-ai` and
+  `@earendil-works/pi-coding-agent` in `devDependencies`, `package-lock.json`
+  regenerated). The extension was developed and first tested against the 0.87.0
+  line; 157/157 tests and the typecheck are green on 1.0.0 (measured 2026-10-03,
+  first out of tree, then in-tree with this pin), and loading was checked in an
+  isolated `PI_CODING_AGENT_DIR` (`pi -ne -e <repo> --offline --list-models
+  paratera` → the same 65 models). `peerDependencies` stays `*` per pi's packaging
+  guidance, so this pin is the tested configuration, not an install constraint. The
+  reason 1.0.0 mattered at all is host-side: `ProviderModelConfig` became a
+  discriminated union and `ModelsStoreEntry.models` became `readonly AnyModel[]`,
+  which broke two sibling provider extensions that read chat fields off those
+  types — this repo reads neither, so nothing here had to change.
 - `guessThinkingFormat` renamed to `guessCompat` (it returns the full compat
   block, not just a thinking format); duplicated
   `AbortController + setTimeout + AbortSignal.any` and
