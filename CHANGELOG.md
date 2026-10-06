@@ -6,10 +6,11 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-Changes below are on `main` but not yet in a tagged release. The supported
-install path for this extension is `pi install
-git:github.com/RarogCmex/pi-paratera@main`, so `main` is what the README
-describes; the next tag will carry this block.
+## [0.1.1] - 2026-10-06
+
+Carries the changes that were on `main` after v0.1.0 (the former `[Unreleased]`
+block) plus the host re-pin to pi 1.0.4. The supported install path for this
+extension remains `pi install git:github.com/RarogCmex/pi-paratera@main`.
 
 ### Fixed
 
@@ -28,6 +29,15 @@ describes; the next tag will carry this block.
 
 ### Changed
 
+- **Host pin raised to pi 1.0.4** (`devDependencies` + regenerated
+  `package-lock.json`, 2026-10-06; the pin was 1.0.0 since 2026-10-03).
+  Typecheck (the repo's pinned tsc 5.9.3) + 157/157 offline tests green, and
+  loading re-checked in an isolated `PI_CODING_AGENT_DIR` (`pi -ne -e <repo>
+  --offline --list-models paratera` → the same 65 models). The 1.0.0→1.0.4
+  host delta is additive for this extension's surface (`registerToolRenderer`,
+  `samplingParamsByThinkingLevel`, `getPromptGuidelines`); the only drift that
+  bit the family was pi's bundled `@types/node` (22.19.19 → 26.6.4), which this
+  repo does not hit.
 - **Host pin raised to pi 1.0.0** (`@earendil-works/pi-ai` and
   `@earendil-works/pi-coding-agent` in `devDependencies`, `package-lock.json`
   regenerated). The extension was developed and first tested against the 0.87.0
