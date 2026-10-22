@@ -6,6 +6,45 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-10-22
+
+Host re-verification only: no catalog, protocol or command behavior changed.
+
+### Changed
+
+- **Host pin raised to pi 1.4.0** (`@earendil-works/pi-ai` and
+  `@earendil-works/pi-coding-agent` in `devDependencies`, `package-lock.json`
+  regenerated, 2026-10-22; the pin was 1.0.4 since 2026-10-06). Typecheck (the
+  repo's pinned tsc 5.9.3) and 157/157 offline tests are green on 1.4.0, and
+  loading was re-checked in an isolated `PI_CODING_AGENT_DIR`
+  (`pi -ne -e <repo> --offline --list-models paratera` → the same 65 models).
+  `peerDependencies` stays `*`, so this pin is the tested configuration, not an
+  install constraint.
+- Reviewed the 1.0.4→1.4.0 host changelog against this extension's surface: every
+  breaking item in it misses this repo, which is why the diff is documentation
+  plus the pin.
+  - 1.2.0 made `before_agent_start` a union over `messageType` (`"user"` vs
+    `"custom"`) and made `pi.sendUserMessage()` require `deliverAs` while a run is
+    starting — this extension registers no `before_agent_start` handler and calls
+    neither `sendUserMessage()` nor `sendMessage()` (its hooks are
+    `session_start`, `model_select`, `thinking_level_select`,
+    `before_provider_request`, `cache_warming_decision`, `message_end`).
+  - 1.2.0 removed the experimental server/client/plugin stack and with it the
+    `@earendil-works/chord` dependency — never imported here; regenerating the
+    lockfile removed that whole subtree (all 28 entries this bump dropped).
+  - 1.2.0 published JSON schemas for pi's own config files (`$schema` on
+    `settings.json`, `models.json`, keybindings, themes) — this extension writes
+    only its own `<agentDir>/paratera.json` and reads no pi config file.
+  - 1.4.0 moved provider attribution headers ahead of `before_provider_headers`
+    (OpenRouter/NVIDIA/OpenCode) — no such handler here, and the one request hook
+    this extension has (`applyCacheRetention` behind `before_provider_request`)
+    edits the request *payload*, never headers.
+  - 1.4.0's provider `compat` on classifier models and 1.3.0's kimi-coding
+    `/v1` base-URL rule concern pi's built-in catalogs and providers, not the
+    `paratera` provider or its 65 catalog entries; `samplingParamsByThinkingLevel`
+    (1.0.2) stays unused because this gateway's thinking control is per-family and
+    already expressed through `compat.thinkingFormat` + the level maps.
+
 ## [0.1.1] - 2026-10-06
 
 Carries the changes that were on `main` after v0.1.0 (the former `[Unreleased]`

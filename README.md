@@ -17,11 +17,13 @@ Ltd. npm name: `@rarogcmex/pi-paratera`.
   request; pi simply cannot show you how much.
 - **Requirements:** Node ≥ 22.19 (the floor is the host's own `engines.node`), ESM,
   strict TypeScript, no build step — pi executes the `.ts` directly. Tested against
-  pi **1.0.4**, which is what `devDependencies` pins since 2026-10-06 (1.0.0 was the
-  pin from 2026-10-03); the extension was developed against pi **0.87.0**, and pi
-  **0.99.1** was measured out of tree on 2026-09-30. Loading was checked separately
-  on 1.0.0 and 1.0.4: `pi -ne -e <repo> --offline --list-models paratera` prints the
-  same 65 models both times.
+  pi **1.4.0**, which is what `devDependencies` pins since 2026-10-22 (1.0.4 was the
+  pin from 2026-10-06, 1.0.0 from 2026-10-03); the extension was developed against pi
+  **0.87.0**, and pi **0.99.1** was measured out of tree on 2026-09-30. Loading was
+  checked separately on 1.0.0, 1.0.4 and 1.4.0: `pi -ne -e <repo> --offline
+  --list-models paratera` prints the same 65 models every time (run it with
+  `PARATERA_API_KEY` set — pi lists configured providers only — and `--offline`
+  keeps the whole check off the network).
   `peerDependencies` stays `*`, and the extension uses version-sensitive host APIs
   (`cache_warming_decision`, `modelRegistry.refresh({force})`, `getAgentDir`), so an
   older pi may load it and silently degrade rather than refuse.
@@ -324,9 +326,10 @@ npm run check      # typecheck + offline tests — must be green before committi
 
 Prerequisites are ordinary: `npm install` resolves everything, because
 `@earendil-works/pi-ai`, `@earendil-works/pi-coding-agent`, `@types/node`, `tsx`
-and `typescript` are real `devDependencies` here (pinned to pi 1.0.4 since
-2026-10-06; 1.0.0 from 2026-10-03; before that the pin was the 0.87.0 line the
-extension was developed against) and `package-lock.json` is committed. Node ≥ 22.19 — pi's own floor.
+and `typescript` are real `devDependencies` here (pinned to pi 1.4.0 since
+2026-10-22; 1.0.4 from 2026-10-06; 1.0.0 from 2026-10-03; before that the pin was
+the 0.87.0 line the extension was developed against) and `package-lock.json` is
+committed. Node ≥ 22.19 — pi's own floor, unchanged in 1.4.0.
 
 Tests are **strictly offline** (`node:test` via tsx). Live requests spend real credits and this
 endpoint rate-limits, so E2E runs only on explicit request:
