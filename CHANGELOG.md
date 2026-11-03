@@ -2,9 +2,40 @@
 
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
-[SemVer](https://semver.org/).
+[SemVer](https://semver.org/). pi 1.5.0 reads this file from the package root and
+shows entries newer than the last seen version on the first fresh launch, so every
+`## ` heading must stay a `## [x.y.z]` version heading — pi's parser
+(`dist/utils/changelog.js`) only recognises a version triple.
 
-## [Unreleased]
+## [0.1.3] — 2026-11-03
+
+Host re-verification only: no catalog, protocol or command behavior changed.
+
+### Changed
+
+- **Host pin raised to pi 1.5.0** (`@earendil-works/pi-ai` and
+  `@earendil-works/pi-coding-agent` in `devDependencies`, `package-lock.json`
+  regenerated, 2026-11-03; the pin was 1.4.0 since 2026-10-22). Typecheck (the repo's
+  pinned tsc 5.9.3) and 157/157 offline tests are green on 1.5.0, and loading was
+  re-checked with a dummy key in an isolated `PI_CODING_AGENT_DIR`
+  (`pi -ne -e <repo> --offline --list-models paratera` → the same 65 models).
+  `peerDependencies` stays `*`, so this pin is the tested configuration, not an
+  install constraint.
+- **First pi-1.5.0 changelog entry.** pi 1.5.0 reads `<package>/CHANGELOG.md` and
+  shows entries newer than the last seen version on the first fresh launch. The file
+  already existed, so the new version is prepended and `version` is bumped patch (a
+  git package only moves when the version grows). `pi.changelogPath` is not set — the
+  root file is read by default. The empty `[Unreleased]` heading was removed because
+  pi's parser drops any `## ` heading that is not a version triple.
+- Reviewed the 1.4.0→1.5.0 host delta against this extension's surface: the only
+  breaking item is pi-schema validation of tool arguments, and this package registers
+  no tools, so nothing here had to change. `keyText()`/`keyHint()` need a custom tool
+  renderer (none), `blocked` on `ctx.ui.custom()` needs an inline custom UI
+  (`/paratera` uses `ui.select`/`ui.input`/`ui.editor`), `pi.exec()` is never called,
+  `Usage.cost.totalFromProvider` and `responseModel` are filled by the host runtime,
+  the new host catalogs (GPT-6.1 Terra, models.dev v2) do not concern this gateway,
+  and MCP OAuth client registration does not apply. `collapseChangelog` is a host
+  setting that starts working on its own now that the changelog exists.
 
 ## [0.1.2] - 2026-10-22
 
